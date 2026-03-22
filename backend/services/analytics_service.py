@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from database import get_db
 from models.collections import RESULTS, SESSIONS, USERS
 from utils.helpers import str_objectid, str_objectids
@@ -26,6 +28,14 @@ async def get_admin_analytics() -> dict:
 
     # Total students
     total_students = await db[USERS].count_documents({"role": "student"})
+
+    # Users with in-progress interview sessions.
+    active_user_ids = await db[SESSIONS].distinct("user_id", {"status": "in_progress"})
+    live_users = len([uid for uid in active_user_ids if uid])
+
+    # New students created since start of current UTC day.
+    day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    new_users_today = await db[USERS].count_documents({"role": "student", "created_at": {"$gte": day_start}})
 
     # Total interviews
     total_interviews = await db[RESULTS].count_documents({})
@@ -74,6 +84,8 @@ async def get_admin_analytics() -> dict:
 
     return {
         "total_students": total_students,
+        "live_users": live_users,
+        "new_users_today": new_users_today,
         "total_interviews": total_interviews,
         "average_score": avg_score,
         "top_performers": top_performers,

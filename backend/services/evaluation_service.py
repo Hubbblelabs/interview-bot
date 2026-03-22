@@ -1,8 +1,19 @@
 from database import get_db, get_redis
+from bson import ObjectId
 from models.collections import RESULTS, ANSWERS, SESSIONS
 from utils.helpers import utc_now
 from utils.gemini import evaluate_interview
-from services.interview_service import get_session_qa
+from services.interview_service import get_session_qa, cleanup_interview_local_state
+
+
+def _json_safe(value):
+    if isinstance(value, ObjectId):
+        return str(value)
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 async def generate_report(session_id: str, user_id: str) -> dict:
@@ -15,7 +26,7 @@ async def generate_report(session_id: str, user_id: str) -> dict:
     if existing:
         existing["id"] = str(existing["_id"])
         del existing["_id"]
-        return existing
+        return _json_safe(existing)
 
     # Get session info
     session = await db[SESSIONS].find_one({"session_id": session_id})
@@ -26,6 +37,8 @@ async def generate_report(session_id: str, user_id: str) -> dict:
         raise ValueError("Unauthorized access to session")
 
     role_title = session.get("role_title", "Software Developer")
+    session_status = session.get("status", "completed")
+    quit_at = session.get("quit_at")
 
     # Get all Q&A from Redis
     qa_pairs = await get_session_qa(session_id)
@@ -40,6 +53,9 @@ async def generate_report(session_id: str, user_id: str) -> dict:
         "session_id": session_id,
         "user_id": user_id,
         "role_title": role_title,
+        "session_status": session_status,
+        "is_quit": session_status in {"quit", "quit_with_report"},
+        "quit_at": quit_at,
         "overall_score": evaluation.get("overall_score", 0),
         "total_questions": len(qa_pairs),
         "detailed_scores": evaluation.get("detailed_scores", []),
@@ -48,7 +64,7 @@ async def generate_report(session_id: str, user_id: str) -> dict:
         "recommendations": evaluation.get("recommendations", []),
         "completed_at": utc_now(),
     }
-    await db[RESULTS].insert_one(result_doc)
+    inserted = await db[RESULTS].insert_one(result_doc)
 
     # Store final answers in MongoDB
     for qa in qa_pairs:
@@ -69,6 +85,7 @@ async def generate_report(session_id: str, user_id: str) -> dict:
     keys_to_delete = [
         f"session:{session_id}",
         f"session:{session_id}:questions",
+        f"session:{session_id}:pending_questions",
         f"session:{session_id}:answers",
     ]
     for qid in question_ids:
@@ -78,6 +95,23 @@ async def generate_report(session_id: str, user_id: str) -> dict:
     if keys_to_delete:
         await redis.delete(*keys_to_delete)
 
-    result_doc["id"] = str(result_doc["_id"])
-    del result_doc["_id"]
-    return result_doc
+    if session_status in {"quit", "quit_with_report"}:
+        await db[SESSIONS].update_one(
+            {"session_id": session_id},
+            {
+                "$set": {
+                    "status": "quit_with_report",
+                    "report_generated_at": utc_now(),
+                }
+            },
+        )
+    elif session_status == "completed":
+        await db[SESSIONS].update_one(
+            {"session_id": session_id},
+            {"$set": {"status": "completed_with_report", "report_generated_at": utc_now()}},
+        )
+
+    cleanup_interview_local_state(session_id)
+
+    result_doc["id"] = str(inserted.inserted_id)
+    return _json_safe(result_doc)

@@ -4,6 +4,8 @@ from database import get_db
 from models.collections import RESUMES, SKILLS
 from utils.helpers import utc_now, str_objectid
 from utils.gemini import parse_resume_with_gemini
+from utils.resume_text import extract_resume_text
+from utils.skills import normalize_skill_list
 from config import get_settings
 
 settings = get_settings()
@@ -20,12 +22,14 @@ async def upload_and_parse_resume(user_id: str, filename: str, file_content: byt
     async with aiofiles.open(file_path, "wb") as f:
         await f.write(file_content)
 
-    # Read file text (for parsing)
-    resume_text = file_content.decode("utf-8", errors="ignore")
+    # Extract readable text by file type before sending to Gemini.
+    resume_text = extract_resume_text(filename, file_content)
 
     # Parse with Gemini
     parsed_data = await parse_resume_with_gemini(resume_text)
-    skills = parsed_data.get("skills", [])
+    raw_skills = parsed_data.get("skills", [])
+    skills = normalize_skill_list(raw_skills)
+    parsed_data["skills"] = skills
 
     # Upsert resume document
     resume_doc = {
@@ -50,6 +54,7 @@ async def upload_and_parse_resume(user_id: str, filename: str, file_content: byt
         {"$set": {
             "user_id": user_id,
             "skills": skills,
+            "raw_skills": raw_skills,
             "updated_at": utc_now(),
         }},
         upsert=True,

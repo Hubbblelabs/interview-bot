@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings
+from pydantic import field_validator
 from functools import lru_cache
 import os
 from dotenv import load_dotenv
@@ -37,6 +38,26 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         extra = "ignore"
+
+    @field_validator("MONGO_URI")
+    @classmethod
+    def validate_mongo_uri(cls, value: str) -> str:
+        v = (value or "").strip().lower()
+        if "localhost" in v or "127.0.0.1" in v:
+            raise ValueError("MONGO_URI must point to MongoDB Atlas, not localhost")
+        if not v.startswith("mongodb+srv://"):
+            raise ValueError("MONGO_URI must use mongodb+srv:// for cloud deployment")
+        return value
+
+    @field_validator("REDIS_URL")
+    @classmethod
+    def validate_redis_url(cls, value: str) -> str:
+        v = (value or "").strip().lower()
+        if "localhost" in v or "127.0.0.1" in v:
+            raise ValueError("REDIS_URL must point to a cloud Redis instance, not localhost")
+        if not (v.startswith("redis://") or v.startswith("rediss://")):
+            raise ValueError("REDIS_URL must start with redis:// or rediss://")
+        return value
 
 
 @lru_cache()
