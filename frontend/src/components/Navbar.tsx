@@ -15,6 +15,7 @@ import {
   Users,
   ChevronLeft,
   ChevronRight,
+  Play,
 } from "lucide-react";
 import { getUser, logout } from "@/lib/auth";
 import { User } from "@/types";
@@ -53,10 +54,10 @@ export default function Navbar() {
     return (
       <Link
         href={href}
-        className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors text-sm font-medium ${
+        className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-all text-sm font-medium ${
           isActive
-            ? "bg-white/15 text-white"
-            : "text-muted hover:text-white hover:bg-white/5"
+            ? "bg-primary text-white shadow-lg"
+            : "text-muted hover:text-primary hover:bg-primary/10"
         }`}
       >
         <Icon className="w-4 h-4 shrink-0" />
@@ -69,21 +70,21 @@ export default function Navbar() {
     return (
       <>
         <nav
-          className={`hidden md:flex fixed top-0 left-0 bottom-0 z-50 border-r border-border bg-black/95 backdrop-blur-xl transition-all duration-200 ${
+          className={`hidden md:flex fixed top-0 left-0 bottom-0 z-50 border-r border-border bg-white/95 backdrop-blur-xl transition-all duration-200 ${
             isAdminCollapsed ? "w-[88px]" : "w-[250px]"
           }`}
         >
           <div className="w-full p-3 flex flex-col">
             <div className="flex items-center justify-between mb-5">
               <Link href="/admin" className="flex items-center gap-2 min-w-0">
-                <div className="w-9 h-9 bg-white rounded-lg flex items-center justify-center shrink-0">
-                  <span className="text-black font-bold text-lg">AI</span>
+                <div className="w-9 h-9 bg-primary rounded-lg flex items-center justify-center shrink-0">
+                  <span className="text-white font-bold text-lg">AI</span>
                 </div>
-                {!isAdminCollapsed && <span className="font-semibold truncate">Interview Trainer</span>}
+                {!isAdminCollapsed && <span className="font-semibold truncate text-foreground">Interview Trainer</span>}
               </Link>
               <button
                 onClick={() => setIsAdminCollapsed((prev) => !prev)}
-                className="p-1.5 rounded-md text-muted hover:text-white hover:bg-white/10"
+                className="p-1.5 rounded-md text-muted hover:text-primary hover:bg-primary/10"
                 aria-label="Toggle sidebar"
                 title={isAdminCollapsed ? "Expand" : "Collapse"}
               >
@@ -98,18 +99,19 @@ export default function Navbar() {
               <NavLink href="/admin/interviews" icon={Send} label="Make Interview" />
               <NavLink href="/admin/reports" icon={FileText} label="Reports" />
               <NavLink href="/admin/users" icon={Users} label="Users" />
+              <NavLink href="/interview" icon={Play} label="Practice" />
             </div>
 
-            <div className="mt-auto pt-4 border-t border-border/80">
+            <div className="mt-auto pt-4 border-t border-border">
               {!isAdminCollapsed && (
                 <div className="mb-3 px-2">
-                  <p className="text-sm font-medium truncate">{user.name}</p>
+                  <p className="text-sm font-medium truncate text-foreground">{user.name}</p>
                   <p className="text-xs text-muted capitalize">{user.role}</p>
                 </div>
               )}
               <button
                 onClick={logout}
-                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-muted hover:text-red-300 hover:bg-red-500/10 transition-colors"
+                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-muted hover:text-secondary hover:bg-secondary/10 transition-colors"
                 title="Logout"
               >
                 <LogOut className="w-4 h-4" />
@@ -122,18 +124,23 @@ export default function Navbar() {
         <nav className="md:hidden fixed top-0 left-0 right-0 z-50 glass border-b border-border">
           <div className="px-4 h-16 flex items-center justify-between">
             <Link href="/admin" className="flex items-center gap-2">
-              <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center">
-                <span className="text-black font-bold text-lg">AI</span>
+              <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
+                <span className="text-white font-bold text-lg">AI</span>
               </div>
-              <span className="font-bold">Interview Trainer</span>
+              <span className="font-bold text-foreground">Interview Trainer</span>
             </Link>
-            <button
-              onClick={logout}
-              className="p-2 rounded-lg text-muted hover:text-red-400 hover:bg-red-500/10 transition-colors"
-              title="Logout"
-            >
-              <LogOut className="w-5 h-5" />
-            </button>
+            <div className="flex items-center gap-2">
+              <Link href="/interview" className="p-2 rounded-lg text-muted hover:text-primary hover:bg-primary/10 transition-colors">
+                <Play className="w-5 h-5" />
+              </Link>
+              <button
+                onClick={logout}
+                className="p-2 rounded-lg text-muted hover:text-secondary hover:bg-secondary/10 transition-colors"
+                title="Logout"
+              >
+                <LogOut className="w-5 h-5" />
+              </button>
+            </div>
           </div>
         </nav>
       </>
@@ -144,28 +151,29 @@ export default function Navbar() {
     <nav className="fixed top-0 left-0 right-0 z-50 glass border-b border-border">
       <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
         <div className="flex items-center gap-8">
-          <Link href={user.role === "admin" ? "/admin" : "/dashboard"} className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center">
-              <span className="text-black font-bold text-lg">AI</span>
+          <Link href="/dashboard" className="flex items-center gap-2">
+            <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center border border-primary/20">
+              <span className="text-white font-bold text-lg">AI</span>
             </div>
-            <span className="font-bold hidden sm:inline">Interview Trainer</span>
+            <span className="font-bold hidden sm:inline text-foreground">Interview Trainer</span>
           </Link>
 
           <div className="flex items-center gap-1">
             <NavLink href="/dashboard" icon={UserIcon} label="Dashboard" />
             <NavLink href="/reports" icon={BarChart3} label="Reports" />
             <NavLink href="/settings" icon={Settings} label="Settings" />
+            <NavLink href="/interview" icon={Play} label="Practice" />
           </div>
         </div>
 
         <div className="flex items-center gap-4">
           <div className="hidden sm:flex flex-col items-end">
-            <span className="text-sm font-medium">{user.name}</span>
+            <span className="text-sm font-medium text-foreground">{user.name}</span>
             <span className="text-xs text-muted capitalize">{user.role}</span>
           </div>
           <button
             onClick={logout}
-            className="p-2 rounded-lg text-muted hover:text-red-400 hover:bg-red-500/10 transition-colors"
+            className="p-2 rounded-lg text-muted hover:text-secondary hover:bg-secondary/10 transition-colors"
             title="Logout"
           >
             <LogOut className="w-5 h-5" />

@@ -6,11 +6,8 @@ import { useRouter } from "next/navigation";
 import Navbar from "@/components/Navbar";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import api from "@/lib/api";
-import { Topic } from "@/types";
+import { Topic, EntryMode, Difficulty } from "@/types";
 import { ArrowLeft, BookOpen, Upload, Sparkles } from "lucide-react";
-
-type EntryMode = "manual" | "pdf";
-type Difficulty = "easy" | "medium" | "hard";
 
 export default function AdminCreateQuestionPage() {
   const router = useRouter();

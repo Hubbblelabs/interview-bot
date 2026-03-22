@@ -1,0 +1,73 @@
+import { ReactNode } from "react";
+
+export interface HeroSectionProps {
+  title?: string;
+  highlightText?: string;
+  description?: string;
+  buttonText?: string;
+  onButtonClick?: () => void;
+  colors?: string[];
+  distortion?: number;
+  swirl?: number;
+  speed?: number;
+  offsetX?: number;
+  className?: string;
+  titleClassName?: string;
+  descriptionClassName?: string;
+  buttonClassName?: string;
+  maxWidth?: string;
+  veilOpacity?: string;
+  fontFamily?: string;
+  fontWeight?: number;
+}
+
+export interface PracticeLayoutProps {
+  children: ReactNode;
+}
+
+export interface UserAvatarProps {
+  isVibrating: boolean;
+  src?: string;
+  className?: string;
+}
+
+export interface RecordButtonProps {
+  isRecording: boolean;
+  onToggle: () => void;
+  disabled?: boolean;
+  className?: string;
+}
+
+export interface AnswerPopupProps {
+  isOpen: boolean;
+  transcript: string;
+  onConfirm: () => void;
+  onRetry: () => void;
+}
+
+export interface QuestionDisplayProps {
+  question: string;
+  index: number;
+  total: number;
+}
+
+export interface HeatmapProps {
+  total: number;
+  answeredCount: number;
+}
+
+export interface TimeStatsProps {
+  answers: { questionId: string; time: number }[];
+}
+
+export interface ProtectedRouteProps {
+  children: React.ReactNode;
+  requiredRole?: "student" | "admin";
+}
+
+export interface SmokeBackgroundProps {
+  smokeColor?: string;
+  baseColor?: string;
+  brightness?: number;
+  className?: string;
+}
