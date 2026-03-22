@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from auth.jwt import get_current_user
 from database import get_db
 from models.collections import USERS, RESUMES, SKILLS
 from utils.helpers import str_objectid
+from utils.skills import normalize_skill_list, cluster_skills
 from bson import ObjectId
 
 router = APIRouter()
@@ -32,6 +33,7 @@ async def get_profile(current_user: dict = Depends(get_current_user)):
             "filename": resume.get("original_filename", ""),
             "uploaded_at": resume.get("uploaded_at", ""),
             "parsed_text": resume.get("parsed_text", ""),
+            "parsed_data": resume.get("parsed_data", {}),
         }
     else:
         profile["resume"] = None
@@ -39,6 +41,7 @@ async def get_profile(current_user: dict = Depends(get_current_user)):
     # Get skills
     skills_doc = await db[SKILLS].find_one({"user_id": current_user["user_id"]})
     profile["skills"] = skills_doc.get("skills", []) if skills_doc else []
+    profile["clustered_skills"] = cluster_skills(profile["skills"])
 
     return profile
 
@@ -49,7 +52,7 @@ async def update_user_skills(
 ):
     """Update the current user's extracted skills."""
     db = get_db()
-    skills = request_data.get("skills", [])
+    skills = normalize_skill_list(request_data.get("skills", []))
     
     # Upsert the skills document for this user
     await db[SKILLS].update_one(
@@ -59,3 +62,24 @@ async def update_user_skills(
     )
     
     return {"message": "Skills updated successfully", "skills": skills}
+
+
+@router.put("/resume-data")
+async def update_resume_data(
+    request_data: dict, 
+    current_user: dict = Depends(get_current_user)
+):
+    """Update the detailed parsed data of the user's resume."""
+    db = get_db()
+    parsed_data = request_data.get("parsed_data", {})
+    
+    # Update only the parsed_data property inside the RESUMES collection
+    result = await db[RESUMES].update_one(
+        {"user_id": current_user["user_id"]},
+        {"$set": {"parsed_data": parsed_data}}
+    )
+
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Resume not found. Upload a resume first.")
+
+    return {"message": "Resume details updated successfully", "parsed_data": parsed_data}

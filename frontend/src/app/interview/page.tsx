@@ -11,12 +11,30 @@ import {
   MicOff,
   Volume2,
   VolumeX,
+  RotateCcw,
   Send,
   CheckCircle,
   Loader2,
   Edit3,
   ChevronRight,
+  XCircle,
+  Timer,
+  AlertTriangle,
+  Lock,
 } from "lucide-react";
+
+const normalizeText = (value: string) =>
+  (value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const formatTime = (seconds: number) => {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}:${String(secs).padStart(2, "0")}`;
+};
 
 function InterviewContent() {
   const router = useRouter();
@@ -28,17 +46,24 @@ function InterviewContent() {
   const [questionNumber, setQuestionNumber] = useState(parseInt(searchParams.get("num") || "1"));
   const [totalQuestions, setTotalQuestions] = useState(parseInt(searchParams.get("total") || "10"));
   const [difficulty, setDifficulty] = useState(searchParams.get("diff") || "medium");
+  const [timerEnabled] = useState(searchParams.get("timerEnabled") === "1");
+  const [timeLeft, setTimeLeft] = useState(parseInt(searchParams.get("timerSeconds") || "0"));
+  const [isTimeUp, setIsTimeUp] = useState(false);
 
   const [answer, setAnswer] = useState("");
+  const [speechFinalTranscript, setSpeechFinalTranscript] = useState("");
+  const [speechStageWarning, setSpeechStageWarning] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isComplete, setIsComplete] = useState(false);
   const [generatingReport, setGeneratingReport] = useState(false);
+  const [isQuitting, setIsQuitting] = useState(false);
 
   const recognitionRef = useRef<any>(null);
   const hasSpokenRef = useRef(false);
   const sttSupported = isSpeechRecognitionSupported();
+  const [isSpeechStepComplete, setIsSpeechStepComplete] = useState(!sttSupported);
 
   useEffect(() => {
     if (currentQuestion && !hasSpokenRef.current) {
@@ -46,6 +71,31 @@ function InterviewContent() {
       playQuestion();
     }
   }, [currentQuestion]);
+
+  useEffect(() => {
+    if (!timerEnabled || isComplete || isTimeUp) return;
+    if (timeLeft <= 0) {
+      setIsTimeUp(true);
+      stopRecording();
+      stopSpeaking();
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setTimeLeft((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          setIsTimeUp(true);
+          stopRecording();
+          stopSpeaking();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [timerEnabled, timeLeft, isComplete, isTimeUp]);
 
   const playQuestion = () => {
     setIsSpeaking(true);
@@ -60,7 +110,10 @@ function InterviewContent() {
   const startRecording = () => {
     if (!sttSupported) return;
     const recognition = createSpeechRecognition(
-      (text) => setAnswer(text),
+      (text, finalText) => {
+        setAnswer(text);
+        setSpeechFinalTranscript(finalText);
+      },
       () => setIsRecording(false),
       (error) => {
         console.error("STT error:", error);
@@ -83,6 +136,14 @@ function InterviewContent() {
   };
 
   const submitAnswer = async () => {
+    if (isTimeUp) {
+      alert("Time is up. Please quit this interview.");
+      return;
+    }
+    if (sttSupported && !isSpeechStepComplete) {
+      alert("Complete speech first, then review in editor before submit.");
+      return;
+    }
     if (!answer.trim()) return;
     setIsSubmitting(true);
     stopRecording();
@@ -104,6 +165,9 @@ function InterviewContent() {
         setQuestionNumber(data.next_question.question_number);
         setDifficulty(data.next_question.difficulty);
         setAnswer("");
+        setSpeechFinalTranscript("");
+        setSpeechStageWarning("");
+        setIsSpeechStepComplete(!sttSupported);
       }
     } catch (err: any) {
       alert(err.response?.data?.detail || "Failed to submit answer");
@@ -121,6 +185,70 @@ function InterviewContent() {
       alert(err.response?.data?.detail || "Failed to generate report");
       setGeneratingReport(false);
     }
+  };
+
+  const quitInterview = async () => {
+    const confirmed = window.confirm(
+      "Are you sure you want to quit? Your progress so far will be evaluated if you have submitted answers."
+    );
+    if (!confirmed) return;
+
+    setIsQuitting(true);
+    stopRecording();
+    stopSpeaking();
+
+    try {
+      const { data } = await api.post("/interview/quit", {
+        session_id: sessionId,
+      });
+
+      if (data.report_generated) {
+        router.push(`/report/${sessionId}`);
+        return;
+      }
+
+      alert("Interview quit successfully. No evaluated answers were found yet.");
+      router.push("/dashboard");
+    } catch (err: any) {
+      alert(err.response?.data?.detail || "Failed to quit interview");
+    } finally {
+      setIsQuitting(false);
+    }
+  };
+
+  const markSpeechComplete = () => {
+    if (!sttSupported) {
+      setIsSpeechStepComplete(true);
+      return;
+    }
+
+    stopRecording();
+    if (!speechFinalTranscript.trim()) {
+      alert("Please speak your answer before continuing to editor.");
+      return;
+    }
+    setSpeechStageWarning("");
+    setAnswer(speechFinalTranscript.trim());
+    setIsSpeechStepComplete(true);
+  };
+
+  const onEditorChange = (nextValue: string) => {
+    if (sttSupported && !isSpeechStepComplete) return;
+
+    if (sttSupported) {
+      const spoken = normalizeText(speechFinalTranscript);
+      const typed = normalizeText(nextValue);
+
+      if (spoken && typed.length > spoken.length + 3) {
+        alert("Extra typed content is not allowed. Please continue by speaking.");
+        setSpeechStageWarning("You added extra typed content. Continue in speech mode.");
+        setIsSpeechStepComplete(false);
+        setAnswer(speechFinalTranscript.trim());
+        return;
+      }
+    }
+
+    setAnswer(nextValue);
   };
 
   if (isComplete) {
@@ -172,12 +300,32 @@ function InterviewContent() {
               <span className="ml-3 px-2 py-0.5 rounded-full text-xs bg-white/5 border border-border text-muted capitalize">
                 {difficulty}
               </span>
+              {timerEnabled && (
+                <span className={`ml-3 px-2 py-0.5 rounded-full text-xs border inline-flex items-center gap-1 ${
+                  isTimeUp
+                    ? "bg-red-500/10 border-red-500/30 text-red-300"
+                    : "bg-white/5 border-border text-muted"
+                }`}>
+                  <Timer className="w-3 h-3" />
+                  {isTimeUp ? "Time up" : formatTime(timeLeft)}
+                </span>
+              )}
             </div>
-            <div className="w-32 h-1.5 bg-border rounded-full overflow-hidden">
-              <div
-                className="h-full bg-white rounded-full transition-all duration-500"
-                style={{ width: `${(questionNumber / totalQuestions) * 100}%` }}
-              />
+            <div className="flex items-center gap-3">
+              <button
+                onClick={quitInterview}
+                disabled={isSubmitting || isQuitting}
+                className="px-3 py-1.5 rounded-lg text-xs border border-red-500/40 text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-50 flex items-center gap-1"
+              >
+                {isQuitting ? <Loader2 className="w-3 h-3 animate-spin" /> : <XCircle className="w-3 h-3" />}
+                Quit Interview
+              </button>
+              <div className="w-32 h-1.5 bg-border rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-white rounded-full transition-all duration-500"
+                  style={{ width: `${(questionNumber / totalQuestions) * 100}%` }}
+                />
+              </div>
             </div>
           </div>
 
@@ -202,17 +350,25 @@ function InterviewContent() {
                 )}
               </button>
             </div>
+            <button
+              onClick={playQuestion}
+              className="mt-4 px-3 py-2 rounded-lg border border-border bg-white/5 text-sm text-muted hover:text-white hover:bg-white/10 transition-colors inline-flex items-center gap-2"
+            >
+              <RotateCcw className="w-4 h-4" />
+              Repeat Question Speech
+            </button>
           </div>
 
           <div className="p-6 rounded-xl bg-card border border-border">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2 text-sm text-muted">
                 <Edit3 className="w-4 h-4" />
-                <span>Your Answer</span>
+                <span>{sttSupported ? (isSpeechStepComplete ? "Review Answer" : "Speech Answer") : "Your Answer"}</span>
               </div>
               {sttSupported && (
                 <button
                   onClick={isRecording ? stopRecording : startRecording}
+                  disabled={isTimeUp}
                   className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-all ${
                     isRecording
                       ? "bg-red-500/20 text-red-400 border border-red-500/30"
@@ -243,11 +399,42 @@ function InterviewContent() {
               </div>
             )}
 
+            {sttSupported && !isSpeechStepComplete && (
+              <div className="mb-3 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center gap-2">
+                <Lock className="w-4 h-4 text-amber-300" />
+                <span className="text-xs text-amber-300">
+                  Editor is locked. Speak your answer, then click Speech Complete.
+                </span>
+              </div>
+            )}
+
+            {speechStageWarning && (
+              <div className="mb-3 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-red-300" />
+                <span className="text-xs text-red-300">{speechStageWarning}</span>
+              </div>
+            )}
+
+            {sttSupported && !isSpeechStepComplete && (
+              <button
+                onClick={markSpeechComplete}
+                disabled={!speechFinalTranscript.trim() || isTimeUp}
+                className="mb-3 px-4 py-2 rounded-lg text-sm font-semibold border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Speech Complete
+              </button>
+            )}
+
             <textarea
               value={answer}
-              onChange={(e) => setAnswer(e.target.value)}
-              placeholder="Type your answer here, or use the microphone to speak..."
+              onChange={(e) => onEditorChange(e.target.value)}
+              placeholder={
+                sttSupported && !isSpeechStepComplete
+                  ? "Speak first using microphone. Editor unlocks after Speech Complete."
+                  : "Review your spoken answer and fix small mistakes..."
+              }
               rows={6}
+              disabled={(sttSupported && !isSpeechStepComplete) || isTimeUp}
               className="resize-none mb-4"
             />
 
@@ -259,7 +446,7 @@ function InterviewContent() {
               </p>
               <button
                 onClick={submitAnswer}
-                disabled={!answer.trim() || isSubmitting}
+                disabled={!answer.trim() || isSubmitting || (sttSupported && !isSpeechStepComplete) || isTimeUp}
                 className="px-6 py-2.5 bg-white text-black rounded-lg font-semibold text-sm hover:bg-gray-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
               >
                 {isSubmitting ? (

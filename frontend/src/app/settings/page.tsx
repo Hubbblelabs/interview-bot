@@ -6,6 +6,7 @@ import ProtectedRoute from "@/components/ProtectedRoute";
 import api from "@/lib/api";
 import { Profile } from "@/types";
 import { Settings, Upload, User, Zap, CheckCircle, Loader2 } from "lucide-react";
+import { PageSkeleton } from "@/components/Skeleton";
 
 export default function SettingsPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -19,6 +20,16 @@ export default function SettingsPage() {
   const [savingSkills, setSavingSkills] = useState(false);
   const [newSkillInput, setNewSkillInput] = useState("");
 
+  // State variables for editable demographic details
+  const [isEditingData, setIsEditingData] = useState(false);
+  const [editableData, setEditableData] = useState({
+    name: "",
+    email: "",
+    phone: "",
+    location: ""
+  });
+  const [savingData, setSavingData] = useState(false);
+
   useEffect(() => {
     fetchProfile();
   }, []);
@@ -29,6 +40,14 @@ export default function SettingsPage() {
       setProfile(data);
       if (data.skills) {
         setEditableSkills(data.skills);
+      }
+      if (data.resume?.parsed_data) {
+        setEditableData({
+          name: data.resume.parsed_data.name || "",
+          email: data.resume.parsed_data.email || "",
+          phone: data.resume.parsed_data.phone || "",
+          location: data.resume.parsed_data.location || ""
+        });
       }
     } catch (err) {
       console.error("Failed to fetch profile:", err);
@@ -88,9 +107,41 @@ export default function SettingsPage() {
     }
   };
 
+  const saveDetails = async () => {
+    setSavingData(true);
+    try {
+      // Re-merge with existing data so we don't wipe out experience_summary, etc.
+      const updatedParsedData = {
+        ...profile?.resume?.parsed_data,
+        ...editableData,
+      };
+      
+      await api.put("/profile/resume-data", { parsed_data: updatedParsedData });
+      
+      setProfile((prev: any) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          resume: {
+            ...prev.resume,
+            parsed_data: updatedParsedData
+          }
+        };
+      });
+      setIsEditingData(false);
+    } catch (err: any) {
+      alert(err.response?.data?.detail || "Failed to update resume details");
+    } finally {
+      setSavingData(false);
+    }
+  };
+
   return (
     <ProtectedRoute requiredRole="student">
       <Navbar />
+      {loading ? (
+        <PageSkeleton />
+      ) : (
       <main className="pt-20 pb-12 px-4 max-w-3xl mx-auto">
         <div className="animate-fade-in">
           <div className="flex items-center gap-3 mb-6">
@@ -103,24 +154,20 @@ export default function SettingsPage() {
               <User className="w-5 h-5 text-muted" />
               <h2 className="text-lg font-semibold">Profile</h2>
             </div>
-            {loading ? (
-              <div className="text-muted animate-pulse-slow">Loading...</div>
-            ) : (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between py-2 border-b border-border">
-                  <span className="text-sm text-muted">Name</span>
-                  <span className="text-sm font-medium">{profile?.name}</span>
-                </div>
-                <div className="flex items-center justify-between py-2 border-b border-border">
-                  <span className="text-sm text-muted">Email</span>
-                  <span className="text-sm font-medium">{profile?.email}</span>
-                </div>
-                <div className="flex items-center justify-between py-2">
-                  <span className="text-sm text-muted">Role</span>
-                  <span className="text-sm font-medium capitalize">{profile?.role}</span>
-                </div>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between py-2 border-b border-border">
+                <span className="text-sm text-muted">Name</span>
+                <span className="text-sm font-medium">{profile?.name}</span>
               </div>
-            )}
+              <div className="flex items-center justify-between py-2 border-b border-border">
+                <span className="text-sm text-muted">Email</span>
+                <span className="text-sm font-medium">{profile?.email}</span>
+              </div>
+              <div className="flex items-center justify-between py-2">
+                <span className="text-sm text-muted">Role</span>
+                <span className="text-sm font-medium capitalize">{profile?.role}</span>
+              </div>
+            </div>
           </div>
 
           <div className="p-6 rounded-xl bg-card border border-border mb-6">
@@ -173,6 +220,110 @@ export default function SettingsPage() {
             </label>
           </div>
 
+          {/* New Personal Details Extracted Block */}
+          {(profile?.resume?.parsed_data && Object.keys(profile.resume.parsed_data).length > 0) || isEditingData ? (
+             <div className="p-6 rounded-xl bg-card border border-border mb-6">
+               <div className="flex items-center justify-between mb-4">
+                 <div className="flex items-center gap-3">
+                   <User className="w-5 h-5 text-muted" />
+                   <h2 className="text-lg font-semibold">Resume Details</h2>
+                 </div>
+                 {!isEditingData ? (
+                   <button
+                     onClick={() => setIsEditingData(true)}
+                     className="px-3 py-1.5 bg-white/5 border border-border rounded-lg text-sm text-muted hover:text-white transition-colors"
+                   >
+                     Edit
+                   </button>
+                 ) : (
+                   <div className="flex items-center gap-2">
+                     <button
+                       onClick={() => setIsEditingData(false)}
+                       disabled={savingData}
+                       className="px-3 py-1.5 bg-transparent text-sm text-muted hover:text-white transition-colors"
+                     >
+                       Cancel
+                     </button>
+                     <button
+                       onClick={saveDetails}
+                       disabled={savingData}
+                       className="px-3 py-1.5 bg-white text-black font-medium rounded-lg text-sm hover:bg-gray-200 transition-colors flex items-center gap-2 disabled:opacity-50"
+                     >
+                       {savingData ? (
+                         <>
+                           <Loader2 className="w-3 h-3 animate-spin" />
+                           Saving...
+                         </>
+                       ) : (
+                         "Save"
+                       )}
+                     </button>
+                   </div>
+                 )}
+               </div>
+               
+               {!isEditingData ? (
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                   <div className="space-y-1">
+                     <span className="text-xs text-muted font-medium">Full Name</span>
+                     <p className="text-sm">{profile?.resume?.parsed_data?.name || "N/A"}</p>
+                   </div>
+                   <div className="space-y-1">
+                     <span className="text-xs text-muted font-medium">Email</span>
+                     <p className="text-sm">{profile?.resume?.parsed_data?.email || "N/A"}</p>
+                   </div>
+                   <div className="space-y-1">
+                     <span className="text-xs text-muted font-medium">Phone Number</span>
+                     <p className="text-sm">{profile?.resume?.parsed_data?.phone || "N/A"}</p>
+                   </div>
+                   <div className="space-y-1">
+                     <span className="text-xs text-muted font-medium">Location</span>
+                     <p className="text-sm">{profile?.resume?.parsed_data?.location || "N/A"}</p>
+                   </div>
+                 </div>
+               ) : (
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                   <div className="space-y-2">
+                     <label className="text-xs text-muted font-medium block">Full Name</label>
+                     <input
+                       type="text"
+                       value={editableData.name}
+                       onChange={(e) => setEditableData(prev => ({ ...prev, name: e.target.value }))}
+                       className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm"
+                     />
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-xs text-muted font-medium block">Email</label>
+                     <input
+                       type="email"
+                       value={editableData.email}
+                       onChange={(e) => setEditableData(prev => ({ ...prev, email: e.target.value }))}
+                       className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm"
+                     />
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-xs text-muted font-medium block">Phone Number</label>
+                     <input
+                       type="text"
+                       value={editableData.phone}
+                       onChange={(e) => setEditableData(prev => ({ ...prev, phone: e.target.value }))}
+                       className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm"
+                     />
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-xs text-muted font-medium block">Location</label>
+                     <input
+                       type="text"
+                       value={editableData.location}
+                       onChange={(e) => setEditableData(prev => ({ ...prev, location: e.target.value }))}
+                       className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm"
+                     />
+                   </div>
+                 </div>
+               )}
+             </div>
+          ) : null}
+
           {(profile?.skills && profile.skills.length > 0) || isEditingSkills ? (
             <div className="p-6 rounded-xl bg-card border border-border">
               <div className="flex items-center justify-between mb-4">
@@ -215,15 +366,26 @@ export default function SettingsPage() {
               </div>
               
               {!isEditingSkills ? (
-                <div className="flex flex-wrap gap-2">
-                  {profile?.skills?.map((skill, i) => (
-                    <span
-                      key={i}
-                      className="px-3 py-1.5 rounded-full bg-white/5 border border-border text-sm"
-                    >
-                      {skill}
-                    </span>
-                  ))}
+                <div className="space-y-3">
+                  <div className="flex flex-wrap gap-2">
+                    {(profile?.clustered_skills && profile.clustered_skills.length > 0
+                      ? profile.clustered_skills.map((item) => item.label)
+                      : profile?.skills || []
+                    ).map((skill, i) => (
+                      <span
+                        key={i}
+                        className="px-3 py-1.5 rounded-full bg-white/5 border border-border text-sm"
+                      >
+                        {skill}
+                      </span>
+                    ))}
+                  </div>
+
+                  {profile?.clustered_skills && profile.clustered_skills.length > 0 ? (
+                    <p className="text-xs text-muted">
+                      Skills are grouped into clusters for cleaner interview targeting. Click Edit to manage raw skills.
+                    </p>
+                  ) : null}
                 </div>
               ) : (
                 <div className="space-y-4">
@@ -260,6 +422,7 @@ export default function SettingsPage() {
           ) : null}
         </div>
       </main>
+      )}
     </ProtectedRoute>
   );
 }

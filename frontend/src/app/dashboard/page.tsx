@@ -6,7 +6,7 @@ import Link from "next/link";
 import Navbar from "@/components/Navbar";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import api from "@/lib/api";
-import { Profile, ReportHistoryItem, JobRole } from "@/types";
+import { Profile, ReportHistoryItem, JobRole, Topic } from "@/types";
 import {
   FileText,
   AlertCircle,
@@ -17,13 +17,17 @@ import {
   ChevronRight,
   Zap,
 } from "lucide-react";
+import { PageSkeleton } from "@/components/Skeleton";
 
 export default function DashboardPage() {
   const router = useRouter();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [history, setHistory] = useState<ReportHistoryItem[]>([]);
   const [roles, setRoles] = useState<JobRole[]>([]);
-  const [selectedRole, setSelectedRole] = useState("");
+  const [topics, setTopics] = useState<Topic[]>([]);
+  const [selectedRoleInput, setSelectedRoleInput] = useState("");
+  const [interviewMode, setInterviewMode] = useState<"resume" | "topic">("resume");
+  const [selectedTopicId, setSelectedTopicId] = useState("");
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -32,18 +36,29 @@ export default function DashboardPage() {
 
   const fetchDashboardData = async () => {
     try {
-      const [profileRes, historyRes, rolesRes] = await Promise.all([
+      const [profileRes, historyRes, rolesRes, topicsRes] = await Promise.all([
         api.get("/profile"),
         api.get("/reports/history"),
-        api.get("/admin/roles"), // We can reuse this endpoint or make a specific public one
+        api.get("/admin/roles"),
+        api.get("/admin/topics"),
       ]);
       setProfile(profileRes.data);
       setHistory(historyRes.data.reports || []);
       
       const availableRoles = rolesRes.data.roles || [];
       setRoles(availableRoles);
-      if (availableRoles.length > 0) {
-        setSelectedRole(availableRoles[0].id);
+      const availableTopics = topicsRes.data.topics || [];
+      setTopics(availableTopics);
+      if (availableTopics.length > 0) {
+        setSelectedTopicId(availableTopics[0].id);
+      }
+      
+      // Auto-populate input if there are recommended roles
+      const recRoles = profileRes.data?.resume?.parsed_data?.recommended_roles;
+      if (recRoles && recRoles.length > 0) {
+        setSelectedRoleInput(recRoles[0]);
+      } else if (availableRoles.length > 0) {
+        setSelectedRoleInput(availableRoles[0].title);
       }
     } catch (err) {
       console.error("Failed to fetch dashboard data", err);
@@ -53,21 +68,47 @@ export default function DashboardPage() {
   };
 
   const startInterview = async () => {
-    if (!selectedRole || !profile?.resume) {
-      alert("Please upload your resume first and select a job role.");
+    if (interviewMode === "resume" && (!selectedRoleInput.trim() || !profile?.resume)) {
+      alert("Please upload your resume first and select or type a job role.");
       return;
     }
+    if (interviewMode === "topic" && !selectedTopicId) {
+      alert("Please select a topic for topic-wise interview.");
+      return;
+    }
+    
     try {
-      const { data } = await api.post("/interview/start", {
-        role_id: selectedRole,
-        total_questions: 5,
-      });
+      const payload: any = {
+        interview_type: interviewMode,
+      };
+
+      if (interviewMode === "topic") {
+        payload.topic_id = selectedTopicId;
+      } else {
+        const matchingAdminRole = roles.find(
+          (r) => r.title.toLowerCase() === selectedRoleInput.trim().toLowerCase()
+        );
+        if (matchingAdminRole) {
+          payload.role_id = matchingAdminRole.id;
+        } else {
+          payload.custom_role = selectedRoleInput.trim();
+        }
+      }
+
+      const { data } = await api.post("/interview/start", payload);
+      const timerEnabled = !!data?.timer?.enabled;
+      const timerSeconds = Number(data?.timer?.seconds || 0);
+      const timerQuery =
+        timerEnabled && timerSeconds > 0
+          ? `&timerEnabled=1&timerSeconds=${timerSeconds}`
+          : "";
+
       router.push(
         `/interview?session=${data.session_id}&q=${encodeURIComponent(
-          data.first_question.question
-        )}&qid=${data.first_question.question_id}&num=${data.first_question.question_number}&diff=${
-          data.first_question.difficulty
-        }&total=5`
+          data.question.question
+        )}&qid=${data.question.question_id}&num=${data.question.question_number}&diff=${
+          data.question.difficulty
+        }&total=${data.question.total_questions || 5}${timerQuery}`
       );
     } catch (err: any) {
       alert(err.response?.data?.detail || "Failed to start interview");
@@ -78,9 +119,7 @@ export default function DashboardPage() {
     return (
       <ProtectedRoute requiredRole="student">
         <Navbar />
-        <main className="pt-20 px-4 max-w-7xl mx-auto h-screen flex justify-center mt-20">
-          <div className="animate-pulse-slow text-muted">Loading dashboard...</div>
-        </main>
+        <PageSkeleton />
       </ProtectedRoute>
     );
   }
@@ -161,20 +200,65 @@ export default function DashboardPage() {
                 <div className="p-6 rounded-xl border border-border bg-gradient-to-br from-card to-white/5">
                   <h2 className="text-xl font-bold mb-2">Ready for a mock interview?</h2>
                   <p className="text-muted mb-6">
-                    Select a role to practice standard questions customized with your background.
+                    Choose Resume Interview or Topic Interview and start practicing.
                   </p>
-                  <div className="flex flex-col sm:flex-row items-center gap-4">
-                    <select
-                      value={selectedRole}
-                      onChange={(e) => setSelectedRole(e.target.value)}
-                      className="flex-1"
+                  <div className="flex items-center gap-2 mb-4">
+                    <button
+                      onClick={() => setInterviewMode("resume")}
+                      className={`px-3 py-1.5 rounded-lg text-sm border ${
+                        interviewMode === "resume"
+                          ? "bg-white text-black border-white"
+                          : "bg-transparent text-muted border-border"
+                      }`}
                     >
-                      {roles.map((r) => (
-                        <option key={r.id} value={r.id}>
-                          {r.title}
-                        </option>
-                      ))}
-                    </select>
+                      Resume Interview
+                    </button>
+                    <button
+                      onClick={() => setInterviewMode("topic")}
+                      className={`px-3 py-1.5 rounded-lg text-sm border ${
+                        interviewMode === "topic"
+                          ? "bg-white text-black border-white"
+                          : "bg-transparent text-muted border-border"
+                      }`}
+                    >
+                      Topic Interview
+                    </button>
+                  </div>
+                  <div className="flex flex-col sm:flex-row items-center gap-4">
+                    {interviewMode === "resume" ? (
+                      <div className="relative flex-1 w-full">
+                        <input
+                          type="text"
+                          list="roles-suggestions"
+                          value={selectedRoleInput}
+                          onChange={(e) => setSelectedRoleInput(e.target.value)}
+                          placeholder="e.g. Frontend Developer"
+                          className="w-full px-4 py-2.5 rounded-lg bg-background border border-border focus:outline-none focus:border-white transition-colors"
+                        />
+                        <datalist id="roles-suggestions">
+                          {profile?.resume?.parsed_data?.recommended_roles?.map((role, i) => (
+                            <option key={`rec-${i}`} value={role}>
+                              Recommended by AI
+                            </option>
+                          ))}
+                          {roles.map((r) => (
+                            <option key={`admin-${r.id}`} value={r.title}>
+                              Standard Role
+                            </option>
+                          ))}
+                        </datalist>
+                      </div>
+                    ) : (
+                      <select
+                        value={selectedTopicId}
+                        onChange={(e) => setSelectedTopicId(e.target.value)}
+                        className="flex-1 w-full"
+                      >
+                        {topics.map((t) => (
+                          <option key={t.id} value={t.id}>{t.name}</option>
+                        ))}
+                      </select>
+                    )}
                     <button
                       onClick={startInterview}
                       className="w-full sm:w-auto px-6 py-2.5 bg-white text-black hover:bg-gray-200 rounded-lg font-semibold transition-colors flex items-center justify-center gap-2"
@@ -194,7 +278,10 @@ export default function DashboardPage() {
                     <h2 className="font-semibold text-lg">Your Top Skills</h2>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    {profile.skills.map((skill, i) => (
+                    {(profile.clustered_skills && profile.clustered_skills.length > 0
+                      ? profile.clustered_skills.map((item) => item.label)
+                      : profile.skills
+                    ).map((skill, i) => (
                       <span
                         key={i}
                         className="px-3 py-1.5 rounded-full bg-white/5 border border-white/10 text-sm"

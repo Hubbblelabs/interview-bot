@@ -3,10 +3,11 @@ from auth.jwt import get_current_user
 from schemas.interview import (
     StartInterviewRequest,
     SubmitAnswerRequest,
+    QuitInterviewRequest,
     InterviewStartResponse,
     AnswerResponse,
 )
-from services.interview_service import start_interview, submit_answer
+from services.interview_service import start_interview, submit_answer, quit_interview
 from services.evaluation_service import generate_report
 
 router = APIRouter()
@@ -22,6 +23,9 @@ async def start_interview_endpoint(
         result = await start_interview(
             user_id=current_user["user_id"],
             role_id=request.role_id,
+            custom_role=request.custom_role,
+            interview_type=request.interview_type,
+            topic_id=request.topic_id,
         )
         return result
     except Exception as e:
@@ -41,6 +45,37 @@ async def submit_answer_endpoint(
             answer=request.answer,
         )
         return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/quit")
+async def quit_interview_endpoint(
+    request: QuitInterviewRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Quit an in-progress interview and generate a partial report if answers exist."""
+    try:
+        quit_result = await quit_interview(
+            session_id=request.session_id,
+            user_id=current_user["user_id"],
+        )
+
+        report = None
+        if quit_result.get("report_generated"):
+            report = await generate_report(
+                session_id=request.session_id,
+                user_id=current_user["user_id"],
+            )
+
+        return {
+            "session_id": request.session_id,
+            "report_generated": bool(report),
+            "report": report,
+            "message": quit_result.get("message", "Interview quit"),
+        }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

@@ -36,9 +36,17 @@ async def connect_db():
     )
 
     # Test connections
-    await mongo_client.admin.command("ping")
-    await redis_client.ping()
-    print("✅ Connected to MongoDB Atlas and Redis")
+    try:
+        await mongo_client.admin.command("ping")
+        print("✅ Connected to MongoDB Atlas")
+    except Exception as e:
+        print(f"❌ Failed to connect to MongoDB: {e}")
+
+    try:
+        await redis_client.ping()
+        print("✅ Connected to Redis")
+    except Exception as e:
+        print(f"⚠️ Failed to connect to Redis (URL might be invalid or unreachable): {e}")
 
 
 async def close_db():

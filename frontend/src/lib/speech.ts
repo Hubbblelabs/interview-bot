@@ -53,7 +53,7 @@ export const stopSpeaking = () => {
 
 // Speech-to-Text
 export const createSpeechRecognition = (
-  onResult: (text: string) => void,
+  onResult: (text: string, finalText: string) => void,
   onEnd: () => void,
   onError: (error: string) => void
 ) => {
@@ -83,8 +83,8 @@ export const createSpeechRecognition = (
       }
     }
     
-    // Pass both final and interim to show real-time progress, but only commit final words
-    onResult((finalTranscript + " " + interimTranscript).trim());
+    // Pass both final+interim for live UI and final-only for downstream validation.
+    onResult((finalTranscript + " " + interimTranscript).trim(), finalTranscript.trim());
   };
 
   recognition.onerror = (event: any) => {

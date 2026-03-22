@@ -1,95 +1,76 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import Navbar from "@/components/Navbar";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import api from "@/lib/api";
-import { AdminQuestion, JobRole } from "@/types";
-import { FileText, Plus, Pencil, Trash2, X, Filter } from "lucide-react";
+import { AdminQuestion, Topic } from "@/types";
+import { FileText, Filter, Pencil, Trash2, Plus, Tags } from "lucide-react";
 
 export default function AdminQuestionsPage() {
   const [questions, setQuestions] = useState<AdminQuestion[]>([]);
-  const [roles, setRoles] = useState<JobRole[]>([]);
+  const [topics, setTopics] = useState<Topic[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [filterRole, setFilterRole] = useState("");
+  const [filterTopic, setFilterTopic] = useState("");
+  const [difficultyFilter, setDifficultyFilter] = useState<string>("all");
+  const [page, setPage] = useState(1);
 
-  const [roleId, setRoleId] = useState("");
-  const [question, setQuestion] = useState("");
-  const [difficulty, setDifficulty] = useState("medium");
-  const [category, setCategory] = useState("");
-  const [saving, setSaving] = useState(false);
+  const pageSize = 8;
 
   useEffect(() => {
-    fetchData();
+    fetchTopics();
   }, []);
 
   useEffect(() => {
-    fetchQuestions();
-  }, [filterRole]);
+    fetchQuestions(filterTopic, difficultyFilter);
+  }, [filterTopic, difficultyFilter]);
 
-  const fetchData = async () => {
+  useEffect(() => {
+    setPage(1);
+  }, [filterTopic, difficultyFilter]);
+
+  const topicMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const topic of topics) {
+      map[topic.id] = topic.name;
+    }
+    return map;
+  }, [topics]);
+
+  const fetchTopics = async () => {
     try {
-      const [rolesRes] = await Promise.all([api.get("/admin/roles")]);
-      setRoles(rolesRes.data.roles || []);
-      await fetchQuestions();
+      const topicsRes = await api.get("/admin/topics");
+      setTopics(topicsRes.data.topics || []);
     } catch (err) {
-      console.error(err);
+      console.error("Failed to fetch question page data", err);
+    }
+  };
+
+  const fetchQuestions = async (topicId?: string, difficulty?: string) => {
+    setLoading(true);
+    try {
+      const query = new URLSearchParams();
+      query.set("interview_type", "topic");
+      if (topicId) query.set("topic_id", topicId);
+      if (difficulty && difficulty !== "all") query.set("difficulty", difficulty);
+      const { data } = await api.get(`/admin/questions?${query.toString()}`);
+
+      const normalized: AdminQuestion[] = (data.questions || []).map((q: any) => ({
+        id: String(q?.id || ""),
+        role_id: q?.role_id ? String(q.role_id) : undefined,
+        topic_id: q?.topic_id ? String(q.topic_id) : undefined,
+        interview_type: (q?.interview_type || "topic") as "resume" | "topic",
+        question: String(q?.question || ""),
+        difficulty: (q?.difficulty || "medium") as "easy" | "medium" | "hard",
+        category: typeof q?.category === "string" ? q.category : "",
+      }));
+
+      setQuestions(normalized);
+    } catch (err) {
+      console.error("Failed to fetch questions", err);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const fetchQuestions = async () => {
-    try {
-      const params = filterRole ? `?role_id=${filterRole}` : "";
-      const { data } = await api.get(`/admin/questions${params}`);
-      setQuestions(data.questions || []);
-    } catch (err) {
-      console.error("Failed to fetch questions:", err);
-    }
-  };
-
-  const resetForm = () => {
-    setShowForm(false);
-    setEditingId(null);
-    setRoleId("");
-    setQuestion("");
-    setDifficulty("medium");
-    setCategory("");
-  };
-
-  const handleEdit = (q: AdminQuestion) => {
-    setEditingId(q.id);
-    setRoleId(q.role_id);
-    setQuestion(q.question);
-    setDifficulty(q.difficulty);
-    setCategory(q.category || "");
-    setShowForm(true);
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSaving(true);
-
-    try {
-      if (editingId) {
-        await api.put(`/admin/questions/${editingId}`, { question, difficulty, category });
-      } else {
-        await api.post("/admin/questions", {
-          role_id: roleId,
-          question,
-          difficulty,
-          category,
-        });
-      }
-      resetForm();
-      fetchQuestions();
-    } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to save question");
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -97,155 +78,168 @@ export default function AdminQuestionsPage() {
     if (!confirm("Delete this question?")) return;
     try {
       await api.delete(`/admin/questions/${id}`);
-      fetchQuestions();
+      await fetchQuestions(filterTopic, difficultyFilter);
     } catch (err: any) {
       alert(err.response?.data?.detail || "Failed to delete question");
     }
   };
 
   const difficultyColor = (d: string) => {
-    switch (d) {
-      case "easy": return "text-green-400 bg-green-500/10 border-green-500/20";
-      case "medium": return "text-yellow-400 bg-yellow-500/10 border-yellow-500/20";
-      case "hard": return "text-red-400 bg-red-500/10 border-red-500/20";
-      default: return "text-muted bg-white/5 border-border";
-    }
+    if (d === "easy") return "text-emerald-300 bg-emerald-500/10 border-emerald-500/30";
+    if (d === "hard") return "text-rose-300 bg-rose-500/10 border-rose-500/30";
+    return "text-amber-300 bg-amber-500/10 border-amber-500/30";
   };
+
+  const totalPages = Math.max(1, Math.ceil(questions.length / pageSize));
+  const visibleQuestions = questions.slice((page - 1) * pageSize, page * pageSize);
 
   return (
     <ProtectedRoute requiredRole="admin">
       <Navbar />
-      <main className="pt-20 pb-12 px-4 max-w-4xl mx-auto">
-        <div className="animate-fade-in">
-          <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center gap-3">
-              <FileText className="w-6 h-6" />
-              <h1 className="text-2xl font-bold">Question Bank</h1>
-            </div>
-            <button
-              onClick={() => { resetForm(); setShowForm(true); }}
-              className="px-4 py-2 bg-white text-black rounded-lg font-semibold text-sm hover:bg-gray-200 transition-colors flex items-center gap-2"
-            >
-              <Plus className="w-4 h-4" />
-              Add Question
-            </button>
-          </div>
-
-          <div className="flex items-center gap-3 mb-6">
-            <Filter className="w-4 h-4 text-muted" />
-            <select
-              value={filterRole}
-              onChange={(e) => setFilterRole(e.target.value)}
-              className="w-48"
-            >
-              <option value="">All Roles</option>
-              {roles.map((r) => (
-                <option key={r.id} value={r.id}>{r.title}</option>
-              ))}
-            </select>
-          </div>
-
-          {showForm && (
-            <div className="p-6 rounded-xl bg-card border border-border mb-6 animate-slide-up">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="font-semibold">{editingId ? "Edit Question" : "New Question"}</h2>
-                <button onClick={resetForm} className="text-muted hover:text-white">
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-              <form onSubmit={handleSubmit} className="space-y-4">
-                {!editingId && (
-                  <select
-                    value={roleId}
-                    onChange={(e) => setRoleId(e.target.value)}
-                    required
-                  >
-                    <option value="">Select Role</option>
-                    {roles.map((r) => (
-                      <option key={r.id} value={r.id}>{r.title}</option>
-                    ))}
-                  </select>
-                )}
-                <textarea
-                  value={question}
-                  onChange={(e) => setQuestion(e.target.value)}
-                  placeholder="Enter the interview question"
-                  rows={3}
-                  required
-                  className="resize-none"
-                />
-                <div className="grid grid-cols-2 gap-4">
-                  <select
-                    value={difficulty}
-                    onChange={(e) => setDifficulty(e.target.value)}
-                  >
-                    <option value="easy">Easy</option>
-                    <option value="medium">Medium</option>
-                    <option value="hard">Hard</option>
-                  </select>
-                  <input
-                    value={category}
-                    onChange={(e) => setCategory(e.target.value)}
-                    placeholder="Category (optional)"
-                  />
+      <main className="pt-20 md:pt-8 pb-12 px-4 max-w-6xl mx-auto md:ml-[var(--admin-sidebar-width,250px)]">
+        <div className="animate-fade-in space-y-6">
+          <section className="rounded-2xl border border-border bg-gradient-to-br from-card to-black/40 p-6">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-3">
+                  <FileText className="w-6 h-6" />
+                  <h1 className="text-2xl font-bold">Topic Questions</h1>
                 </div>
-                <button
-                  type="submit"
-                  disabled={saving}
-                  className="px-6 py-2.5 bg-white text-black rounded-lg font-semibold text-sm hover:bg-gray-200 transition-colors disabled:opacity-50"
+                <p className="text-sm text-muted mt-2">
+                  Manage all topic-based interview questions in one place.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Link
+                  href="/admin/topics"
+                  className="px-4 py-2 rounded-lg border border-white/30 bg-white/5 text-sm font-semibold hover:bg-white/10 transition-colors flex items-center gap-2"
                 >
-                  {saving ? "Saving..." : editingId ? "Update" : "Create"}
-                </button>
-              </form>
+                  <Tags className="w-4 h-4" />
+                  Manage Topics
+                </Link>
+                <Link
+                  href="/admin/questions/new"
+                  className="px-4 py-2 rounded-lg bg-white text-black text-sm font-semibold hover:bg-gray-200 transition-colors flex items-center gap-2"
+                >
+                  <Plus className="w-4 h-4" />
+                  Add Question
+                </Link>
+              </div>
             </div>
-          )}
+          </section>
+
+          <section className="rounded-2xl border border-border bg-card p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <Filter className="w-4 h-4 text-muted" />
+              <h2 className="font-semibold">Filters</h2>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <select
+                value={filterTopic}
+                onChange={(e) => setFilterTopic(e.target.value)}
+                className="px-3 py-2 rounded-lg border border-border bg-black/20 text-sm"
+              >
+                <option value="">All Topics</option>
+                {topics.map((topic) => (
+                  <option key={topic.id} value={topic.id}>
+                    {topic.name}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={difficultyFilter}
+                onChange={(e) => setDifficultyFilter(e.target.value)}
+                className="px-3 py-2 rounded-lg border border-border bg-black/20 text-sm"
+              >
+                <option value="all">All Difficulty</option>
+                <option value="easy">Easy</option>
+                <option value="medium">Medium</option>
+                <option value="hard">Hard</option>
+              </select>
+            </div>
+          </section>
 
           {loading ? (
-            <div className="text-center text-muted mt-12 animate-pulse-slow">Loading...</div>
+            <div className="text-center text-muted mt-12 animate-pulse-slow">Loading questions...</div>
           ) : questions.length === 0 ? (
-            <div className="text-center mt-16">
-              <FileText className="w-12 h-12 text-muted mx-auto mb-4" />
-              <p className="text-muted">No questions yet. Add your first question!</p>
-            </div>
+            <section className="rounded-2xl border border-border bg-card p-10 text-center">
+              <p className="text-muted">No questions found for the selected topic.</p>
+            </section>
           ) : (
-            <div className="space-y-3">
-              {questions.map((q) => (
-                <div
-                  key={q.id}
-                  className="p-5 rounded-xl bg-card border border-border"
-                >
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex-1">
-                      <p className="font-medium text-sm">{q.question}</p>
-                      <div className="flex items-center gap-2 mt-2">
-                        <span className={`px-2 py-0.5 rounded-full text-xs border ${difficultyColor(q.difficulty)}`}>
-                          {q.difficulty}
-                        </span>
-                        {q.category && (
-                          <span className="px-2 py-0.5 rounded-full text-xs bg-white/5 border border-border text-muted">
-                            {q.category}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        onClick={() => handleEdit(q)}
+            <section>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+              {visibleQuestions.map((q) => (
+                <article key={q.id} className="rounded-xl border border-border bg-card p-4 hover:bg-white/[0.03] transition-colors">
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="font-medium text-sm leading-relaxed">{q.question}</p>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Link
+                        href={`/admin/questions/${q.id}`}
                         className="p-2 rounded-lg text-muted hover:text-white hover:bg-white/5 transition-colors"
                       >
                         <Pencil className="w-4 h-4" />
-                      </button>
+                      </Link>
                       <button
                         onClick={() => handleDelete(q.id)}
-                        className="p-2 rounded-lg text-muted hover:text-red-400 hover:bg-red-500/5 transition-colors"
+                        className="p-2 rounded-lg text-muted hover:text-rose-300 hover:bg-rose-500/10 transition-colors"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
                   </div>
-                </div>
+                  <div className="flex flex-wrap items-center gap-2 mt-3">
+                    <span className={`px-2 py-0.5 rounded-full text-xs border capitalize ${difficultyColor(q.difficulty)}`}>
+                      {q.difficulty}
+                    </span>
+                    {(() => {
+                      const category = (q.category || "").trim();
+                      const topic = (q.topic_id ? (topicMap[q.topic_id] || "Topic") : "").trim();
+                      const showCategory =
+                        !!category && (!topic || category.toLowerCase() !== topic.toLowerCase());
+
+                      return (
+                        <>
+                          {topic && (
+                            <span className="px-2 py-0.5 rounded-full text-xs border border-cyan-500/30 bg-cyan-500/10 text-cyan-200">
+                              {topic}
+                            </span>
+                          )}
+                          {showCategory && (
+                            <span className="px-2 py-0.5 rounded-full text-xs border border-border bg-white/5 text-muted">
+                              {category}
+                            </span>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </div>
+                </article>
               ))}
-            </div>
+              </div>
+              <div className="mt-5 flex items-center justify-between gap-2">
+                <p className="text-xs text-muted">
+                  Showing {(page - 1) * pageSize + 1}-{Math.min(page * pageSize, questions.length)} of {questions.length}
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    disabled={page === 1}
+                    className="px-3 py-1.5 rounded-lg border border-border text-sm disabled:opacity-40"
+                  >
+                    Prev
+                  </button>
+                  <span className="text-sm text-muted">{page}/{totalPages}</span>
+                  <button
+                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                    disabled={page === totalPages}
+                    className="px-3 py-1.5 rounded-lg border border-border text-sm disabled:opacity-40"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            </section>
           )}
         </div>
       </main>

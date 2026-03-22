@@ -4,12 +4,19 @@ from typing import Optional, List, Dict
 
 class StartInterviewRequest(BaseModel):
     role_id: Optional[str] = None
+    custom_role: Optional[str] = None
+    interview_type: Optional[str] = "resume"
+    topic_id: Optional[str] = None
 
 
 class SubmitAnswerRequest(BaseModel):
     session_id: str
     question_id: str
     answer: str
+
+
+class QuitInterviewRequest(BaseModel):
+    session_id: str
 
 
 class InterviewQuestion(BaseModel):
@@ -30,6 +37,12 @@ class AnswerResponse(BaseModel):
     session_id: str
     next_question: Optional[InterviewQuestion] = None
     is_complete: bool = False
+    message: str = ""
+
+
+class QuitInterviewResponse(BaseModel):
+    session_id: str
+    report_generated: bool = False
     message: str = ""
 
 

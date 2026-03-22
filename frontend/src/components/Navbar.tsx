@@ -3,17 +3,48 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LogOut, User as UserIcon, Settings, BarChart3, Briefcase, FileSignature } from "lucide-react";
+import {
+  LogOut,
+  User as UserIcon,
+  Settings,
+  BarChart3,
+  FileSignature,
+  Tags,
+  FileText,
+  Send,
+  Users,
+  ChevronLeft,
+  ChevronRight,
+} from "lucide-react";
 import { getUser, logout } from "@/lib/auth";
 import { User } from "@/types";
 
 export default function Navbar() {
   const pathname = usePathname();
   const [user, setUserState] = useState<User | null>(null);
+  const [isAdminCollapsed, setIsAdminCollapsed] = useState(false);
 
   useEffect(() => {
     setUserState(getUser());
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = localStorage.getItem("admin_sidebar_collapsed");
+    setIsAdminCollapsed(saved === "1");
+  }, []);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    if (user?.role !== "admin") {
+      document.documentElement.style.setProperty("--admin-sidebar-width", "0px");
+      return;
+    }
+
+    const width = isAdminCollapsed ? "88px" : "250px";
+    document.documentElement.style.setProperty("--admin-sidebar-width", width);
+    localStorage.setItem("admin_sidebar_collapsed", isAdminCollapsed ? "1" : "0");
+  }, [isAdminCollapsed, user?.role]);
 
   if (!user) return null;
 
@@ -24,15 +55,90 @@ export default function Navbar() {
         href={href}
         className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors text-sm font-medium ${
           isActive
-            ? "bg-white/10 text-white"
+            ? "bg-white/15 text-white"
             : "text-muted hover:text-white hover:bg-white/5"
         }`}
       >
-        <Icon className="w-4 h-4" />
-        <span className="hidden sm:inline">{label}</span>
+        <Icon className="w-4 h-4 shrink-0" />
+        {(!isAdminCollapsed || user.role !== "admin") && <span>{label}</span>}
       </Link>
     );
   };
+
+  if (user.role === "admin") {
+    return (
+      <>
+        <nav
+          className={`hidden md:flex fixed top-0 left-0 bottom-0 z-50 border-r border-border bg-black/95 backdrop-blur-xl transition-all duration-200 ${
+            isAdminCollapsed ? "w-[88px]" : "w-[250px]"
+          }`}
+        >
+          <div className="w-full p-3 flex flex-col">
+            <div className="flex items-center justify-between mb-5">
+              <Link href="/admin" className="flex items-center gap-2 min-w-0">
+                <div className="w-9 h-9 bg-white rounded-lg flex items-center justify-center shrink-0">
+                  <span className="text-black font-bold text-lg">AI</span>
+                </div>
+                {!isAdminCollapsed && <span className="font-semibold truncate">Interview Trainer</span>}
+              </Link>
+              <button
+                onClick={() => setIsAdminCollapsed((prev) => !prev)}
+                className="p-1.5 rounded-md text-muted hover:text-white hover:bg-white/10"
+                aria-label="Toggle sidebar"
+                title={isAdminCollapsed ? "Expand" : "Collapse"}
+              >
+                {isAdminCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
+              </button>
+            </div>
+
+            <div className="space-y-1">
+              <NavLink href="/admin" icon={BarChart3} label="Dashboard" />
+              <NavLink href="/admin/topics" icon={Tags} label="Topics" />
+              <NavLink href="/admin/questions" icon={FileSignature} label="Questions" />
+              <NavLink href="/admin/interviews" icon={Send} label="Make Interview" />
+              <NavLink href="/admin/reports" icon={FileText} label="Reports" />
+              <NavLink href="/admin/users" icon={Users} label="Users" />
+            </div>
+
+            <div className="mt-auto pt-4 border-t border-border/80">
+              {!isAdminCollapsed && (
+                <div className="mb-3 px-2">
+                  <p className="text-sm font-medium truncate">{user.name}</p>
+                  <p className="text-xs text-muted capitalize">{user.role}</p>
+                </div>
+              )}
+              <button
+                onClick={logout}
+                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-muted hover:text-red-300 hover:bg-red-500/10 transition-colors"
+                title="Logout"
+              >
+                <LogOut className="w-4 h-4" />
+                {!isAdminCollapsed && <span>Logout</span>}
+              </button>
+            </div>
+          </div>
+        </nav>
+
+        <nav className="md:hidden fixed top-0 left-0 right-0 z-50 glass border-b border-border">
+          <div className="px-4 h-16 flex items-center justify-between">
+            <Link href="/admin" className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center">
+                <span className="text-black font-bold text-lg">AI</span>
+              </div>
+              <span className="font-bold">Interview Trainer</span>
+            </Link>
+            <button
+              onClick={logout}
+              className="p-2 rounded-lg text-muted hover:text-red-400 hover:bg-red-500/10 transition-colors"
+              title="Logout"
+            >
+              <LogOut className="w-5 h-5" />
+            </button>
+          </div>
+        </nav>
+      </>
+    );
+  }
 
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 glass border-b border-border">
@@ -46,19 +152,9 @@ export default function Navbar() {
           </Link>
 
           <div className="flex items-center gap-1">
-            {user.role === "admin" ? (
-              <>
-                <NavLink href="/admin" icon={BarChart3} label="Dashboard" />
-                <NavLink href="/admin/roles" icon={Briefcase} label="Roles" />
-                <NavLink href="/admin/questions" icon={FileSignature} label="Questions" />
-              </>
-            ) : (
-              <>
-                <NavLink href="/dashboard" icon={UserIcon} label="Dashboard" />
-                <NavLink href="/reports" icon={BarChart3} label="Reports" />
-                <NavLink href="/settings" icon={Settings} label="Settings" />
-              </>
-            )}
+            <NavLink href="/dashboard" icon={UserIcon} label="Dashboard" />
+            <NavLink href="/reports" icon={BarChart3} label="Reports" />
+            <NavLink href="/settings" icon={Settings} label="Settings" />
           </div>
         </div>
 
