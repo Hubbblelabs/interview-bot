@@ -4,10 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getUser, isAuthenticated, logout } from "@/lib/auth";
 
-interface ProtectedRouteProps {
-  children: React.ReactNode;
-  requiredRole?: "student" | "admin";
-}
+import { ProtectedRouteProps } from "@/types";
 
 export default function ProtectedRoute({ children, requiredRole }: ProtectedRouteProps) {
   const router = useRouter();

@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
+
 @import "tailwindcss";
 
 @theme {
@@ -7,23 +9,43 @@
   --color-border: var(--border);
   --color-border-light: var(--border-light);
   --color-muted: var(--muted);
+  
+  --color-primary: var(--primary);
+  --color-secondary: var(--secondary);
+  --color-bg-muted: var(--bg-muted);
+  --color-bg-light: var(--bg-light);
+  
+  --font-sans: 'Poppins', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
 @layer base {
-  :root {
-    --background: #000000;
-    --background-elevated: #0a0a0a;
-    --foreground: #ffffff;
-    --brand: #ffffff;
-    --brand-hover: #e5e5e5;
-    --card: #0a0a0a;
-    --border: #1f1f1f;
-    --border-light: #2e2e2e;
-    --muted: #a1a1aa;
-    
-    --radius-sm: 0.3rem;
-    --radius-md: 0.5rem;
-    --radius-lg: 0.75rem;
+ :root {
+  --primary: #0047AB;       /* Strong Blue */
+  --secondary: #000080;     /* Deep Navy */
+  --accent: #82C8E5;        /* Light Blue */
+  --muted-blue: #6D8196;    /* Blue Gray */
+
+  --background: #F2F2F2;    /* Keep for readability */
+  --foreground: #1a1a1a;
+
+  --card: #ffffff;
+  --bg-muted: #6D8196;
+  --bg-light: #82C8E5;
+
+  --border: #d1d5db;
+  --border-light: #e5e7eb;
+
+  --muted: #6D8196;
+
+  --radius-sm: 0.3rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+}
+  .dark {
+    --background: #1a1a1a;
+    --foreground: #F2F2F2;
+    --card: #262626;
+    --border: #404040;
   }
 
   * {
@@ -33,13 +55,14 @@
   body {
     background-color: var(--background);
     color: var(--foreground);
+    font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
 }
 
 @layer components {
-  /* Scrollbar Customization for Webkit */
+  /* Scrollbar Customization */
   ::-webkit-scrollbar {
     width: 6px;
     height: 6px;
@@ -48,11 +71,11 @@
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: var(--border-light);
+    background: var(--bg-muted);
     border-radius: var(--radius-md);
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: var(--muted);
+    background: var(--primary);
   }
 
   /* Shared Input/Button Styles */
@@ -61,24 +84,21 @@
   input[type="email"],
   textarea,
   select {
-    @apply w-full bg-background border border-border rounded-lg px-4 py-2.5 text-sm text-foreground focus:outline-none focus:border-muted transition-colors placeholder:text-muted;
+    @apply w-full bg-white border border-border rounded-lg px-4 py-2.5 text-sm text-foreground focus:outline-none focus:border-primary transition-colors placeholder:text-muted;
   }
   
-  select {
-    @apply appearance-none bg-no-repeat;
-    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%23a1a1aa' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
-    background-position: right 0.5rem center;
-    background-size: 1.5em 1.5em;
-    padding-right: 2.5rem;
-  }
-
   /* Glassmorphism Classes */
   .glass {
-    @apply bg-black/40 backdrop-blur-md border border-white/10;
+    @apply bg-white/40 backdrop-blur-md border border-white/20;
   }
   
   .glass-card {
-    @apply bg-card/60 backdrop-blur-sm border border-border shadow-xl;
+    @apply bg-white/60 backdrop-blur-sm border border-border shadow-xl;
+  }
+
+  /* Audio Vibration Animation */
+  .vibrate {
+    animation: vibrate 0.2s linear infinite;
   }
 }
 
@@ -90,10 +110,6 @@
   .animate-slide-up {
     animation: slideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   }
-  
-  .animate-pulse-slow {
-    animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-  }
 }
 
 @keyframes fadeIn {
@@ -104,4 +120,12 @@
 @keyframes slideUp {
   from { opacity: 0; transform: translateY(15px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes vibrate {
+  0% { transform: translate(0); }
+  25% { transform: translate(2px, 2px); }
+  50% { transform: translate(-2px, -2px); }
+  75% { transform: translate(2px, -2px); }
+  100% { transform: translate(0); }
 }

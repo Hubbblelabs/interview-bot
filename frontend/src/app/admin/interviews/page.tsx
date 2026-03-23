@@ -4,12 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import Navbar from "@/components/Navbar";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import api from "@/lib/api";
-import { Topic } from "@/types";
+import { Topic, QuestionLite } from "@/types";
 import { Send, CheckCircle2, XCircle } from "lucide-react";
-
-type QuestionLite = {
-  topic_id?: string;
-};
 
 export default function AdminInterviewsPage() {
   const [topics, setTopics] = useState<Topic[]>([]);
