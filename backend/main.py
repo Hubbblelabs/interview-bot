@@ -9,7 +9,7 @@ import os
 from config import get_settings
 from database import connect_db, close_db
 
-from routers import auth, resume, profile, interview, reports, admin
+from routers import auth, resume, profile, interview, reports, admin, speech
 
 settings = get_settings()
 
@@ -48,6 +48,7 @@ app.include_router(profile.router, prefix="/profile", tags=["Profile"])
 app.include_router(interview.router, prefix="/interview", tags=["Interview"])
 app.include_router(reports.router, prefix="/reports", tags=["Reports"])
 app.include_router(admin.router, prefix="/admin", tags=["Admin"])
+app.include_router(speech.router, prefix="/speech", tags=["Speech"])
 
 
 @app.get("/health")

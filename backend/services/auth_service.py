@@ -25,6 +25,9 @@ async def signup_user(name: str, email: str, password: str, role: str = None) ->
         "email": email,
         "password": hashed_password,
         "role": determined_role,
+        "speech_settings": {
+            "voice_gender": "female",
+        },
         "created_at": utc_now(),
     }
 
