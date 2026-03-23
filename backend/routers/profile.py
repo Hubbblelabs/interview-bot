@@ -24,6 +24,9 @@ async def get_profile(current_user: dict = Depends(get_current_user)):
         "name": current_user.get("name", ""),
         "email": current_user.get("email", ""),
         "role": current_user.get("role", "student"),
+        "speech_settings": {
+            "voice_gender": (user or {}).get("speech_settings", {}).get("voice_gender", "female"),
+        },
     }
 
     # Get resume info
@@ -44,6 +47,27 @@ async def get_profile(current_user: dict = Depends(get_current_user)):
     profile["clustered_skills"] = cluster_skills(profile["skills"])
 
     return profile
+
+
+@router.put("/speech-settings")
+async def update_speech_settings(
+    request_data: dict,
+    current_user: dict = Depends(get_current_user),
+):
+    """Update user's speech assistant preferences."""
+    db = get_db()
+    voice_gender = (request_data.get("voice_gender") or "female").strip().lower()
+    if voice_gender not in {"male", "female", "auto"}:
+        raise HTTPException(status_code=400, detail="voice_gender must be one of: male, female, auto")
+
+    await db[USERS].update_one(
+        {"_id": ObjectId(current_user["user_id"])},
+        {"$set": {"speech_settings.voice_gender": voice_gender}},
+    )
+    return {
+        "message": "Speech settings updated successfully",
+        "speech_settings": {"voice_gender": voice_gender},
+    }
 
 @router.put("/skills")
 async def update_user_skills(

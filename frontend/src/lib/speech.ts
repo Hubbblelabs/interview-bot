@@ -2,6 +2,13 @@ export const isSpeechSynthesisSupported = () => {
   return typeof window !== "undefined" && "speechSynthesis" in window;
 };
 
+export type SpeechVoiceGender = "male" | "female" | "auto";
+
+type SpeakOptions = {
+  voiceGender?: SpeechVoiceGender;
+  style?: "assistant" | "default";
+};
+
 export const isSpeechRecognitionSupported = () => {
   return (
     typeof window !== "undefined" &&
@@ -12,7 +19,44 @@ export const isSpeechRecognitionSupported = () => {
 // Text-to-Speech
 let synthesisUtterance: SpeechSynthesisUtterance | null = null;
 
-export const speak = (text: string, onEnd?: () => void) => {
+const FEMALE_HINTS = ["female", "woman", "samantha", "zira", "aria", "jenny", "karen", "susan"];
+const MALE_HINTS = ["male", "man", "david", "mark", "guy", "ryan", "adam", "george"];
+
+const scoreVoice = (voice: SpeechSynthesisVoice, voiceGender: SpeechVoiceGender) => {
+  const name = (voice.name || "").toLowerCase();
+  const lang = (voice.lang || "").toLowerCase();
+  let score = 0;
+
+  if (lang.startsWith("en-us")) score += 40;
+  else if (lang.startsWith("en")) score += 25;
+
+  if (name.includes("google") || name.includes("microsoft") || name.includes("natural") || name.includes("neural")) {
+    score += 20;
+  }
+
+  const hasFemale = FEMALE_HINTS.some((hint) => name.includes(hint));
+  const hasMale = MALE_HINTS.some((hint) => name.includes(hint));
+
+  if (voiceGender === "female") {
+    if (hasFemale) score += 25;
+    if (hasMale) score -= 15;
+  }
+
+  if (voiceGender === "male") {
+    if (hasMale) score += 25;
+    if (hasFemale) score -= 15;
+  }
+
+  if (voice.default) score += 5;
+  return score;
+};
+
+const pickBestVoice = (voices: SpeechSynthesisVoice[], voiceGender: SpeechVoiceGender) => {
+  if (!voices.length) return null;
+  return [...voices].sort((a, b) => scoreVoice(b, voiceGender) - scoreVoice(a, voiceGender))[0] || null;
+};
+
+export const speak = (text: string, onEnd?: () => void, options?: SpeakOptions) => {
   if (!isSpeechSynthesisSupported()) {
     console.warn("Speech synthesis is not supported in this browser.");
     if (onEnd) onEnd();
@@ -23,18 +67,25 @@ export const speak = (text: string, onEnd?: () => void) => {
   stopSpeaking();
 
   synthesisUtterance = new SpeechSynthesisUtterance(text);
-  
-  // Try to use a better sounding English voice if available
+
+  const voiceGender = options?.voiceGender || "auto";
+
+  // Pick a higher quality English voice with optional gender preference.
   const voices = window.speechSynthesis.getVoices();
-  const preferredVoice = voices.find(
-    (v) => v.lang.includes("en-US") && (v.name.includes("Google") || v.name.includes("Samantha"))
-  );
+  const preferredVoice = pickBestVoice(voices, voiceGender);
   if (preferredVoice) {
     synthesisUtterance.voice = preferredVoice;
   }
 
-  synthesisUtterance.rate = 1.0;
-  synthesisUtterance.pitch = 1.0;
+  if (options?.style === "assistant") {
+    synthesisUtterance.rate = 0.94;
+    synthesisUtterance.pitch = voiceGender === "male" ? 0.9 : 1.0;
+    synthesisUtterance.volume = 1.0;
+  } else {
+    synthesisUtterance.rate = 1.0;
+    synthesisUtterance.pitch = 1.0;
+    synthesisUtterance.volume = 1.0;
+  }
 
   if (onEnd) {
     synthesisUtterance.onend = onEnd;

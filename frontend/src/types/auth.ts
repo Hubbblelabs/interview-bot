@@ -16,6 +16,9 @@ export interface AdminUser {
 }
 
 export interface Profile extends User {
+  speech_settings?: {
+    voice_gender?: "male" | "female" | "auto";
+  };
   resume?: {
     filename: string;
     parsed_data?: {

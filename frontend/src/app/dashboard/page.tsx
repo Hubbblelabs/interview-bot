@@ -197,7 +197,7 @@ export default function DashboardPage() {
                   </Link>
                 </div>
               ) : (
-                <div className="p-6 rounded-xl border border-border bg-linear-to-br from-card to-white/5">
+                <div className="p-6 rounded-xl border border-border bg-gradient-to-br from-card to-white/5">
                   <h2 className="text-xl font-bold mb-2">Ready for a mock interview?</h2>
                   <p className="text-muted mb-6">
                     Choose Resume Interview or Topic Interview and start practicing.
