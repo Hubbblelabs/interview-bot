@@ -10,12 +10,8 @@ import { Profile, ReportHistoryItem, JobRole, Topic } from "@/types";
 import {
   FileText,
   AlertCircle,
-  TrendingUp,
-  Award,
   Clock,
-  Briefcase,
   ChevronRight,
-  Zap,
 } from "lucide-react";
 import { PageSkeleton } from "@/components/Skeleton";
 
@@ -136,7 +132,7 @@ export default function DashboardPage() {
         <div className="animate-fade-in">
           <div className="mb-8">
             <h1 className="text-3xl font-bold tracking-tight mb-2">
-              Welcome back, {profile?.name?.split(" ")[0]}
+              Welcome, {profile?.name?.split(" ")[0]}
             </h1>
             <p className="text-muted">Here's an overview of your interview progress.</p>
           </div>
@@ -153,21 +149,17 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="p-6 rounded-xl bg-card border border-border flex items-center gap-4">
-              <div className="p-3 bg-white/5 rounded-lg text-yellow-400">
-                <Award className="w-6 h-6" />
-              </div>
-              <div>
+              <div className="w-1 h-14 rounded-full bg-amber-400/80" />
+              <div className="flex-1">
                 <p className="text-sm text-muted mb-1">Average Score</p>
-                <p className="text-2xl font-bold">{avgScore}%</p>
+                <p className="text-2xl font-bold tracking-tight">{avgScore}%</p>
               </div>
             </div>
             <div className="p-6 rounded-xl bg-card border border-border flex items-center gap-4">
-              <div className="p-3 bg-white/5 rounded-lg text-green-400">
-                <TrendingUp className="w-6 h-6" />
-              </div>
-              <div>
+              <div className={`w-1 h-14 rounded-full ${profile?.resume ? "bg-green-400/80" : "bg-rose-400/80"}`} />
+              <div className="flex-1">
                 <p className="text-sm text-muted mb-1">Resume Status</p>
-                <p className="text-xl font-bold text-green-400">
+                <p className={`text-xl font-bold ${profile?.resume ? "text-green-400" : "text-rose-400"}`}>
                   {profile?.resume ? "Uploaded" : "Missing"}
                 </p>
               </div>
@@ -190,10 +182,10 @@ export default function DashboardPage() {
                     </div>
                   </div>
                   <Link
-                    href="/settings"
+                    href="/user-detail"
                     className="px-5 py-2.5 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-sm font-semibold transition-colors whitespace-nowrap"
                   >
-                    Go to Settings
+                    Go to User Detail
                   </Link>
                 </div>
               ) : (
@@ -207,9 +199,9 @@ export default function DashboardPage() {
                       onClick={() => setInterviewMode("resume")}
                       className={`px-3 py-1.5 rounded-lg text-sm border ${
                         interviewMode === "resume"
-                          ? "bg-white text-black border-white"
+                          ? "bg-black text-white border-black"
                           : "bg-transparent text-muted border-border"
-                      }`}
+                      } cursor-pointer`}
                     >
                       Resume Interview
                     </button>
@@ -217,9 +209,9 @@ export default function DashboardPage() {
                       onClick={() => setInterviewMode("topic")}
                       className={`px-3 py-1.5 rounded-lg text-sm border ${
                         interviewMode === "topic"
-                          ? "bg-white text-black border-white"
+                          ? "bg-black text-white border-black"
                           : "bg-transparent text-muted border-border"
-                      }`}
+                      } cursor-pointer`}
                     >
                       Topic Interview
                     </button>
@@ -266,29 +258,6 @@ export default function DashboardPage() {
                       Start Practice
                       <ChevronRight className="w-4 h-4" />
                     </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Skills */}
-              {profile?.skills && profile.skills.length > 0 && (
-                <div className="p-6 rounded-xl border border-border bg-card">
-                  <div className="flex items-center gap-2 mb-4">
-                    <Zap className="w-5 h-5 text-yellow-400" />
-                    <h2 className="font-semibold text-lg">Your Top Skills</h2>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {(profile.clustered_skills && profile.clustered_skills.length > 0
-                      ? profile.clustered_skills.map((item) => item.label)
-                      : profile.skills
-                    ).map((skill, i) => (
-                      <span
-                        key={i}
-                        className="px-3 py-1.5 rounded-full bg-white/5 border border-white/10 text-sm"
-                      >
-                        {skill}
-                      </span>
-                    ))}
                   </div>
                 </div>
               )}

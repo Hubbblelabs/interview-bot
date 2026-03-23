@@ -146,7 +146,7 @@ export default function SettingsPage() {
         <div className="animate-fade-in">
           <div className="flex items-center gap-3 mb-6">
             <Settings className="w-6 h-6" />
-            <h1 className="text-2xl font-bold">Settings</h1>
+            <h1 className="text-2xl font-bold">User Detail</h1>
           </div>
 
           <div className="p-6 rounded-xl bg-card border border-border mb-6">

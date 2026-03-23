@@ -12,6 +12,9 @@ export default function AdminReportsPage() {
   const [items, setItems] = useState<AdminReportSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
+  const [nameFilter, setNameFilter] = useState("");
+  const [topicFilter, setTopicFilter] = useState("all");
+  const [performanceFilter, setPerformanceFilter] = useState<"all" | "top" | "low">("all");
 
   const pageSize = 8;
 
@@ -36,8 +39,27 @@ export default function AdminReportsPage() {
     return "text-red-400";
   };
 
-  const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
-  const visibleItems = items.slice((page - 1) * pageSize, page * pageSize);
+  const availableTopics = Array.from(
+    new Set(items.map((item) => item.role_title?.trim()).filter((v): v is string => !!v))
+  ).sort((a, b) => a.localeCompare(b));
+
+  const filteredItems = items.filter((item) => {
+    const byName = !nameFilter.trim() || item.user_name.toLowerCase().includes(nameFilter.trim().toLowerCase());
+    const byTopic = topicFilter === "all" || item.role_title === topicFilter;
+    const byPerf =
+      performanceFilter === "all" ||
+      (performanceFilter === "top" && item.overall_score >= 70) ||
+      (performanceFilter === "low" && item.overall_score < 40);
+
+    return byName && byTopic && byPerf;
+  });
+
+  const totalPages = Math.max(1, Math.ceil(filteredItems.length / pageSize));
+  const visibleItems = filteredItems.slice((page - 1) * pageSize, page * pageSize);
+
+  useEffect(() => {
+    setPage((prev) => Math.min(prev, totalPages));
+  }, [totalPages]);
 
   return (
     <ProtectedRoute requiredRole="admin">
@@ -49,12 +71,46 @@ export default function AdminReportsPage() {
             <h1 className="text-2xl font-bold">Interview Reports</h1>
           </div>
 
+          <div className="rounded-xl border border-border bg-card p-4 mb-5 grid grid-cols-1 md:grid-cols-3 gap-3">
+            <input
+              value={nameFilter}
+              onChange={(e) => {
+                setNameFilter(e.target.value);
+                setPage(1);
+              }}
+              placeholder="Filter by name"
+            />
+            <select
+              value={topicFilter}
+              onChange={(e) => {
+                setTopicFilter(e.target.value);
+                setPage(1);
+              }}
+            >
+              <option value="all">All Topics</option>
+              {availableTopics.map((topic) => (
+                <option key={topic} value={topic}>{topic}</option>
+              ))}
+            </select>
+            <select
+              value={performanceFilter}
+              onChange={(e) => {
+                setPerformanceFilter(e.target.value as "all" | "top" | "low");
+                setPage(1);
+              }}
+            >
+              <option value="all">All Performance</option>
+              <option value="top">Top Performance (&gt;= 70)</option>
+              <option value="low">Low Performance (&lt; 40)</option>
+            </select>
+          </div>
+
           {loading ? (
             <div className="text-center text-muted mt-12 animate-pulse-slow">Loading reports...</div>
-          ) : items.length === 0 ? (
+          ) : filteredItems.length === 0 ? (
             <div className="text-center mt-16">
               <FileText className="w-12 h-12 text-muted mx-auto mb-4" />
-              <p className="text-muted">No interview reports found yet.</p>
+              <p className="text-muted">No interview reports found for current filters.</p>
             </div>
           ) : (
             <div>
@@ -83,7 +139,7 @@ export default function AdminReportsPage() {
               </div>
               <div className="mt-5 flex items-center justify-between gap-2">
                 <p className="text-xs text-muted">
-                  Showing {(page - 1) * pageSize + 1}-{Math.min(page * pageSize, items.length)} of {items.length}
+                  Showing {(page - 1) * pageSize + 1}-{Math.min(page * pageSize, filteredItems.length)} of {filteredItems.length}
                 </p>
                 <div className="flex items-center gap-2">
                   <button

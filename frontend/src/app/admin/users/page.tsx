@@ -72,7 +72,7 @@ export default function AdminUsersPage() {
           <section className="rounded-2xl border border-border bg-gradient-to-br from-card to-black/40 p-6">
             <div className="flex items-center gap-3 mb-2">
               <Users className="w-6 h-6" />
-              <h1 className="text-2xl font-bold">User Management</h1>
+              <h1 className="text-2xl font-bold">Registered User</h1>
             </div>
             <p className="text-sm text-muted">View all registered users and remove accounts when required.</p>
           </section>

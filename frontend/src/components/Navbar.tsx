@@ -15,7 +15,6 @@ import {
   Users,
   ChevronLeft,
   ChevronRight,
-  Play,
 } from "lucide-react";
 import { getUser, logout } from "@/lib/auth";
 import { User } from "@/types";
@@ -50,7 +49,10 @@ export default function Navbar() {
   if (!user) return null;
 
   const NavLink = ({ href, icon: Icon, label }: { href: string; icon: any; label: string }) => {
-    const isActive = pathname === href || pathname.startsWith(`${href}/`);
+    const isActive =
+      href === "/admin"
+        ? pathname === "/admin"
+        : pathname === href || pathname.startsWith(`${href}/`);
     return (
       <Link
         href={href}
@@ -99,7 +101,6 @@ export default function Navbar() {
               <NavLink href="/admin/interviews" icon={Send} label="Make Interview" />
               <NavLink href="/admin/reports" icon={FileText} label="Reports" />
               <NavLink href="/admin/users" icon={Users} label="Users" />
-              <NavLink href="/interview" icon={Play} label="Practice" />
             </div>
 
             <div className="mt-auto pt-4 border-t border-border">
@@ -130,9 +131,6 @@ export default function Navbar() {
               <span className="font-bold text-foreground">Interview Trainer</span>
             </Link>
             <div className="flex items-center gap-2">
-              <Link href="/interview" className="p-2 rounded-lg text-muted hover:text-primary hover:bg-primary/10 transition-colors">
-                <Play className="w-5 h-5" />
-              </Link>
               <button
                 onClick={logout}
                 className="p-2 rounded-lg text-muted hover:text-secondary hover:bg-secondary/10 transition-colors"
@@ -161,8 +159,7 @@ export default function Navbar() {
           <div className="flex items-center gap-1">
             <NavLink href="/dashboard" icon={UserIcon} label="Dashboard" />
             <NavLink href="/reports" icon={BarChart3} label="Reports" />
-            <NavLink href="/settings" icon={Settings} label="Settings" />
-            <NavLink href="/interview" icon={Play} label="Practice" />
+            <NavLink href="/user-detail" icon={Settings} label="User Detail" />
           </div>
         </div>
 
