@@ -377,25 +377,34 @@ async def evaluate_interview(questions_and_answers: list, role_title: str) -> di
     for i, qa in enumerate(questions_and_answers, 1):
         qa_text += f"\nQ{i}: {qa['question']}\nA{i}: {qa['answer']}\n"
 
-    prompt_template = PromptTemplate.from_template(
-        """You are an expert technical interviewer evaluating a candidate for the role: {role_title}
+        prompt_template = PromptTemplate.from_template(
+                """You are an interview coach for college students evaluating a candidate for the role: {role_title}
 
 Here are the interview questions and the candidate's answers:
 {qa_text}
 
-Evaluate the candidate and return a JSON object with:
+Evaluation style requirements:
+1. Evaluate based on concept understanding (not perfection), effort, and clarity.
+2. If an answer is incomplete:
+     - acknowledge what is correct,
+     - gently point out what is missing,
+     - give a hint instead of giving the full direct answer.
+3. Avoid harsh, discouraging, or overly critical language.
+4. Keep feedback constructive, encouraging, and learning-oriented.
+
+Return a JSON object with:
 - "overall_score": integer from 0-100
 - "detailed_scores": list of objects, each with:
-  - "question": the question text
-  - "answer": the answer text
-  - "score": integer 0-100
-  - "feedback": specific feedback for this answer
+    - "question": the question text
+    - "answer": the answer text
+    - "score": integer 0-100
+    - "feedback": specific but supportive coaching feedback for this answer
 - "strengths": list of 3-5 strength areas
-- "weaknesses": list of 3-5 areas for improvement
-- "recommendations": list of 3-5 actionable recommendations
+- "weaknesses": list of 3-5 areas for improvement (worded supportively)
+- "recommendations": list of 3-5 actionable learning recommendations
 
-Be fair but thorough. Return ONLY valid JSON, no markdown formatting."""
-    )
+Return ONLY valid JSON, no markdown formatting."""
+        )
     prompt = prompt_template.format(role_title=role_title, qa_text=qa_text)
 
     result = _extract_json_object(await call_gemini(prompt))
