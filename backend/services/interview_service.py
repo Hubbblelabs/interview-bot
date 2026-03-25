@@ -1,15 +1,19 @@
 import json
 import asyncio
+from bson import ObjectId
 from database import get_db, get_redis
 from models.collections import SESSIONS, JOB_ROLES, SKILLS, QUESTIONS, TOPICS, TOPIC_QUESTIONS, ROLE_REQUIREMENTS
 from utils.helpers import generate_id, utc_now, str_objectid
 from utils.skills import normalize_skill_list, find_matching_skills, find_missing_skills, build_interview_focus_skills
 from services.interview_graph import run_interview_graph
+from utils.gemini import generate_interview_question_batch
 
-MAX_QUESTIONS = 10
+MAX_QUESTIONS = 20
 SESSION_TTL = 7200  # 2 hours
 BATCH_SIZE = 5
 PREGEN_MIN_PENDING = 2
+FOLLOWUP_AI_COUNT = 3
+FOLLOWUP_BANK_COUNT = 2
 
 # Local process memory summary requested in workflow.
 _LOCAL_SUMMARIES: dict[str, str] = {}
@@ -29,6 +33,51 @@ def _update_local_summary(session_id: str, question: str, answer: str) -> None:
     combined = f"{existing}\nQ: {question}\nA: {answer}".strip()
     # Keep summary bounded in memory.
     _LOCAL_SUMMARIES[session_id] = combined[-1500:]
+
+
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _avg_recent_answer_words(qa_pairs: list, window: int = 3) -> int:
+    if not qa_pairs:
+        return 0
+    recent = qa_pairs[-window:]
+    lengths = [len((item.get("answer") or "").split()) for item in recent]
+    if not lengths:
+        return 0
+    return sum(lengths) // len(lengths)
+
+
+def _plan_followup_mix(target: int, qa_pairs: list, has_bank_source: bool) -> tuple[int, int]:
+    """Decide AI-vs-bank split for the next batch.
+
+    Baseline: 3 AI + 2 bank. Adaptation:
+    - Short answers -> increase bank ratio for stability.
+    - Rich answers -> increase AI follow-up ratio for personalization.
+    """
+    if target <= 0:
+        return 0, 0
+    if not has_bank_source:
+        return target, 0
+
+    avg_words = _avg_recent_answer_words(qa_pairs)
+
+    ai_target = min(FOLLOWUP_AI_COUNT, target)
+    if avg_words < 18:
+        ai_target = min(2, target)
+    elif avg_words > 70:
+        ai_target = min(4, target)
+
+    # Keep at least one bank question when a bank source exists and batch size allows.
+    if target > 1:
+        ai_target = min(ai_target, target - 1)
+
+    bank_target = target - ai_target
+    return ai_target, bank_target
 
 
 async def _get_generated_question_texts(redis, session_id: str) -> list[str]:
@@ -55,6 +104,19 @@ async def _generate_question_batch(
     target = min(batch_size, remaining)
     if target <= 0:
         return [], current_difficulty
+
+    # Initial resume seed: generate the full first batch in one Gemini call.
+    if generated_count == 0 and target > 1 and not local_summary:
+        seeded = await generate_interview_question_batch(
+            skills=skills,
+            role_title=role_title,
+            count=target,
+            start_question_number=1,
+            previous_questions=previous_questions,
+        )
+        if seeded:
+            last = seeded[-1].get("difficulty", current_difficulty)
+            return seeded, last
 
     generated: list[dict] = []
     rolling_questions = list(previous_questions)
@@ -110,6 +172,129 @@ async def _append_batch_to_redis(redis, session_id: str, batch: list[dict]) -> l
     return created_ids
 
 
+async def _fetch_question_bank_batch(
+    db,
+    role_id: str | None,
+    excluded_questions: list[str],
+    limit: int,
+) -> list[dict]:
+    if not role_id or limit <= 0:
+        return []
+
+    role_candidates = [role_id]
+    try:
+        oid = ObjectId(role_id)
+        role_candidates.append(str(oid))
+        role_candidates.append(oid)
+    except Exception:
+        pass
+
+    query = {"role_id": {"$in": role_candidates}}
+
+    excluded = {q.strip().lower() for q in excluded_questions if q}
+    cursor = db[QUESTIONS].find(query).limit(200)
+    selected: list[dict] = []
+
+    async for q in cursor:
+        text = (q.get("question") or "").strip()
+        if not text:
+            continue
+        if text.lower() in excluded:
+            continue
+        selected.append(
+            {
+                "question": text,
+                "difficulty": (q.get("difficulty") or "medium").lower(),
+                "category": q.get("category") or "question-bank",
+            }
+        )
+        excluded.add(text.lower())
+        if len(selected) >= limit:
+            break
+
+    return selected
+
+
+async def _generate_mixed_followup_batch(
+    db,
+    redis,
+    session_id: str,
+    session: dict,
+    generated_count: int,
+    max_questions: int,
+) -> tuple[list[dict], str, dict]:
+    remaining = max(0, max_questions - generated_count)
+    target = min(BATCH_SIZE, remaining)
+    if target <= 0:
+        return [], session.get("current_difficulty", "medium"), {
+            "gemini_calls": 0,
+            "gemini_questions": 0,
+            "bank_questions": 0,
+            "bank_shortfall": 0,
+        }
+
+    previous_questions = await _get_generated_question_texts(redis, session_id)
+    qa_pairs = await get_session_qa(session_id)
+    role_title = session.get("role_title", "Software Developer")
+    skills = _safe_json_list(session.get("skills", "[]"))
+    current_difficulty = session.get("current_difficulty", "medium")
+
+    ai_target, bank_target = _plan_followup_mix(
+        target=target,
+        qa_pairs=qa_pairs,
+        has_bank_source=bool(session.get("role_id")),
+    )
+
+    from utils.gemini import generate_followup_question_batch_from_qa
+
+    gemini_calls = 0
+    gemini_questions = 0
+
+    ai_items = await generate_followup_question_batch_from_qa(
+        role_title=role_title,
+        skills=skills,
+        qa_pairs=qa_pairs,
+        previous_questions=previous_questions,
+        count=ai_target,
+        difficulty=current_difficulty,
+    )
+    if ai_target > 0:
+        gemini_calls += 1
+    gemini_questions += len(ai_items)
+
+    exclude_pool = list(previous_questions) + [i.get("question", "") for i in ai_items]
+    bank_items = await _fetch_question_bank_batch(
+        db=db,
+        role_id=session.get("role_id"),
+        excluded_questions=exclude_pool,
+        limit=bank_target,
+    )
+
+    if len(bank_items) < bank_target:
+        refill = bank_target - len(bank_items)
+        refill_ai = await generate_followup_question_batch_from_qa(
+            role_title=role_title,
+            skills=skills,
+            qa_pairs=qa_pairs,
+            previous_questions=exclude_pool + [i.get("question", "") for i in bank_items],
+            count=refill,
+            difficulty=current_difficulty,
+        )
+        ai_items.extend(refill_ai)
+        if refill > 0:
+            gemini_calls += 1
+        gemini_questions += len(refill_ai)
+
+    mixed = (ai_items + bank_items)[:target]
+    last_difficulty = mixed[-1].get("difficulty", current_difficulty) if mixed else current_difficulty
+    return mixed, last_difficulty, {
+        "gemini_calls": gemini_calls,
+        "gemini_questions": gemini_questions,
+        "bank_questions": len(bank_items),
+        "bank_shortfall": max(0, bank_target - len(bank_items)),
+    }
+
+
 async def _start_topic_interview(user_id: str, topic_id: str) -> dict:
     """Start a topic-wise interview with admin-created questions."""
     db = get_db()
@@ -145,6 +330,11 @@ async def _start_topic_interview(user_id: str, topic_id: str) -> dict:
         "question_count": 1,
         "max_questions": total_questions,
         "current_difficulty": selected[0].get("difficulty", "medium"),
+        "metrics_gemini_calls": 0,
+        "metrics_gemini_questions": 0,
+        "metrics_bank_questions": 0,
+        "metrics_bank_shortfall": 0,
+        "metrics_generation_batches": 0,
         "timer_enabled": timer_enabled,
         "timer_seconds": timer_seconds,
         "started_at": utc_now(),
@@ -170,6 +360,11 @@ async def _start_topic_interview(user_id: str, topic_id: str) -> dict:
         "timer_enabled": str(timer_enabled),
         "timer_seconds": str(timer_seconds or ""),
         "status": "in_progress",
+        "metrics_gemini_calls": 0,
+        "metrics_gemini_questions": 0,
+        "metrics_bank_questions": 0,
+        "metrics_bank_shortfall": 0,
+        "metrics_generation_batches": 0,
     }
     await redis.hset(f"session:{session_id}", mapping=session_state)
     await redis.expire(f"session:{session_id}", SESSION_TTL)
@@ -338,16 +533,6 @@ async def start_interview(
     if not skills_for_interview:
         skills_for_interview = ["general"]
 
-    # Check for existing questions in question bank
-    bank_questions = []
-    if role_id and not custom_role:
-        try:
-            cursor = db[QUESTIONS].find({"role_id": role_id}).limit(5)
-            async for q in cursor:
-                bank_questions.append(q["question"])
-        except Exception:
-            pass
-
     # Workflow: generate first batch upfront, store in Redis, serve Q1.
     initial_batch, last_difficulty = await _generate_question_batch(
         role_title=role_title,
@@ -376,6 +561,11 @@ async def start_interview(
         "question_count": 1,
         "max_questions": MAX_QUESTIONS,
         "current_difficulty": initial_batch[0].get("difficulty", "medium"),
+        "metrics_gemini_calls": 1,
+        "metrics_gemini_questions": len(initial_batch),
+        "metrics_bank_questions": 0,
+        "metrics_bank_shortfall": 0,
+        "metrics_generation_batches": 1,
         "started_at": utc_now(),
     }
     await db[SESSIONS].insert_one(session_doc)
@@ -383,6 +573,7 @@ async def start_interview(
     # Store session state in Redis
     session_state = {
         "user_id": user_id,
+        "role_id": role_id or "",
         "role_title": role_title,
         "skills": json.dumps(skills_for_interview),
         "user_skills": json.dumps(user_skills),
@@ -397,6 +588,11 @@ async def start_interview(
         "current_difficulty": last_difficulty,
         "interview_type": "resume",
         "status": "in_progress",
+        "metrics_gemini_calls": 1,
+        "metrics_gemini_questions": len(initial_batch),
+        "metrics_bank_questions": 0,
+        "metrics_bank_shortfall": 0,
+        "metrics_generation_batches": 1,
     }
     await redis.hset(f"session:{session_id}", mapping=session_state)
     await redis.expire(f"session:{session_id}", SESSION_TTL)
@@ -489,6 +685,13 @@ async def submit_answer(session_id: str, question_id: str, answer: str) -> dict:
 
     # Serve from pending queue first.
     next_question_id = await redis.lpop(f"session:{session_id}:pending_questions")
+    metrics_delta = {
+        "gemini_calls": 0,
+        "gemini_questions": 0,
+        "bank_questions": 0,
+        "bank_shortfall": 0,
+        "generation_batches": 0,
+    }
 
     # If queue is empty, generate only for resume interviews.
     if not next_question_id:
@@ -508,19 +711,13 @@ async def submit_answer(session_id: str, question_id: str, answer: str) -> dict:
                 "message": "Interview complete! Generating your report...",
             }
 
-        previous_questions = await _get_generated_question_texts(redis, session_id)
-        skills = _safe_json_list(session.get("skills", "[]"))
-        role_title = session.get("role_title", "Software Developer")
-
-        sync_batch, last_difficulty = await _generate_question_batch(
-            role_title=role_title,
-            skills=skills,
-            previous_questions=previous_questions,
+        sync_batch, last_difficulty, batch_metrics = await _generate_mixed_followup_batch(
+            db=db,
+            redis=redis,
+            session_id=session_id,
+            session=session,
             generated_count=generated_count,
             max_questions=max_questions,
-            current_difficulty=session.get("current_difficulty", "medium"),
-            local_summary=_LOCAL_SUMMARIES.get(session_id),
-            batch_size=BATCH_SIZE,
         )
         new_ids = await _append_batch_to_redis(redis, session_id, sync_batch)
         generated_count += len(new_ids)
@@ -534,7 +731,38 @@ async def submit_answer(session_id: str, question_id: str, answer: str) -> dict:
                 mapping={
                     "generated_count": str(generated_count),
                     "current_difficulty": last_difficulty,
+                    "metrics_gemini_calls": str(_safe_int(session.get("metrics_gemini_calls", 0)) + batch_metrics.get("gemini_calls", 0)),
+                    "metrics_gemini_questions": str(_safe_int(session.get("metrics_gemini_questions", 0)) + batch_metrics.get("gemini_questions", 0)),
+                    "metrics_bank_questions": str(_safe_int(session.get("metrics_bank_questions", 0)) + batch_metrics.get("bank_questions", 0)),
+                    "metrics_bank_shortfall": str(_safe_int(session.get("metrics_bank_shortfall", 0)) + batch_metrics.get("bank_shortfall", 0)),
+                    "metrics_generation_batches": str(_safe_int(session.get("metrics_generation_batches", 0)) + 1),
                 },
+            )
+            await db[SESSIONS].update_one(
+                {"session_id": session_id},
+                {
+                    "$set": {
+                        "metrics_gemini_calls": _safe_int(session.get("metrics_gemini_calls", 0)) + batch_metrics.get("gemini_calls", 0),
+                        "metrics_gemini_questions": _safe_int(session.get("metrics_gemini_questions", 0)) + batch_metrics.get("gemini_questions", 0),
+                        "metrics_bank_questions": _safe_int(session.get("metrics_bank_questions", 0)) + batch_metrics.get("bank_questions", 0),
+                        "metrics_bank_shortfall": _safe_int(session.get("metrics_bank_shortfall", 0)) + batch_metrics.get("bank_shortfall", 0),
+                        "metrics_generation_batches": _safe_int(session.get("metrics_generation_batches", 0)) + 1,
+                    }
+                },
+            )
+            metrics_delta = {
+                "gemini_calls": batch_metrics.get("gemini_calls", 0),
+                "gemini_questions": batch_metrics.get("gemini_questions", 0),
+                "bank_questions": batch_metrics.get("bank_questions", 0),
+                "bank_shortfall": batch_metrics.get("bank_shortfall", 0),
+                "generation_batches": 1,
+            }
+            print(
+                f"[interview-metrics] session={session_id} "
+                f"batch_size={len(new_ids)} gemini_calls+={batch_metrics.get('gemini_calls', 0)} "
+                f"gemini_questions+={batch_metrics.get('gemini_questions', 0)} "
+                f"bank_questions+={batch_metrics.get('bank_questions', 0)} "
+                f"bank_shortfall+={batch_metrics.get('bank_shortfall', 0)}"
             )
 
     if not next_question_id:
@@ -553,8 +781,13 @@ async def submit_answer(session_id: str, question_id: str, answer: str) -> dict:
         "current_difficulty": next_difficulty,
     })
 
-    if interview_type == "resume":
-        _schedule_pregen(session_id, answered_count)
+    effective_stats = {
+        "gemini_calls": _safe_int(session.get("metrics_gemini_calls", 0)) + metrics_delta["gemini_calls"],
+        "gemini_questions": _safe_int(session.get("metrics_gemini_questions", 0)) + metrics_delta["gemini_questions"],
+        "bank_questions": _safe_int(session.get("metrics_bank_questions", 0)) + metrics_delta["bank_questions"],
+        "bank_shortfall": _safe_int(session.get("metrics_bank_shortfall", 0)) + metrics_delta["bank_shortfall"],
+        "generation_batches": _safe_int(session.get("metrics_generation_batches", 0)) + metrics_delta["generation_batches"],
+    }
 
     return {
         "session_id": session_id,
@@ -567,6 +800,7 @@ async def submit_answer(session_id: str, question_id: str, answer: str) -> dict:
         },
         "is_complete": False,
         "message": f"Question {new_served_count} of {max_questions}",
+        "generation_stats": effective_stats,
     }
 
 

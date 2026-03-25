@@ -541,12 +541,17 @@ async def list_admin_reports(limit: int = 100) -> list:
                 "completed_at": report.get("completed_at", ""),
                 "session_status": report.get("session_status", "completed"),
                 "is_quit": bool(report.get("is_quit", False)),
+                "generation_stats": {
+                    "gemini_calls": int((report.get("generation_stats") or {}).get("gemini_calls", 0) or 0),
+                    "gemini_questions": int((report.get("generation_stats") or {}).get("gemini_questions", 0) or 0),
+                    "bank_questions": int((report.get("generation_stats") or {}).get("bank_questions", 0) or 0),
+                    "bank_shortfall": int((report.get("generation_stats") or {}).get("bank_shortfall", 0) or 0),
+                    "generation_batches": int((report.get("generation_stats") or {}).get("generation_batches", 0) or 0),
+                },
             }
         )
 
     return output
-
-
 async def get_admin_report_detail(session_id: str) -> dict:
     """Get full interview result detail for admin view."""
     db = get_db()
