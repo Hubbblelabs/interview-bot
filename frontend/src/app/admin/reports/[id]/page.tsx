@@ -15,6 +15,7 @@ import {
   ChevronUp,
   BarChart3,
   ArrowLeft,
+  Activity,
 } from "lucide-react";
 
 export default function AdminReportDetailPage() {
@@ -49,6 +50,8 @@ export default function AdminReportDetailPage() {
       ? "bg-yellow-500/10 border-yellow-500/20"
       : "bg-red-500/10 border-red-500/20";
 
+  const metrics = report?.generation_stats || {};
+
   if (loading) {
     return (
       <ProtectedRoute requiredRole="admin">
@@ -81,7 +84,7 @@ export default function AdminReportDetailPage() {
             Back to Reports
           </Link>
 
-          <div className="text-center mb-8">
+          <div className="text-center mb-8 animate-fade-in-soft">
             <p className="text-sm text-muted mb-2">
               {report.user_name} ({report.user_email})
             </p>
@@ -96,7 +99,7 @@ export default function AdminReportDetailPage() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
-            <div className="p-5 rounded-xl bg-card border border-border">
+            <div className="app-panel">
               <div className="flex items-center gap-2 mb-3">
                 <TrendingUp className="w-5 h-5 text-green-400" />
                 <h3 className="font-semibold text-green-400">Strengths</h3>
@@ -111,7 +114,7 @@ export default function AdminReportDetailPage() {
               </ul>
             </div>
 
-            <div className="p-5 rounded-xl bg-card border border-border">
+            <div className="app-panel">
               <div className="flex items-center gap-2 mb-3">
                 <TrendingDown className="w-5 h-5 text-red-400" />
                 <h3 className="font-semibold text-red-400">Areas to Improve</h3>
@@ -128,7 +131,7 @@ export default function AdminReportDetailPage() {
           </div>
 
           {report.recommendations?.length > 0 && (
-            <div className="p-5 rounded-xl bg-card border border-border mb-8">
+            <div className="app-panel mb-8">
               <div className="flex items-center gap-2 mb-3">
                 <Lightbulb className="w-5 h-5 text-yellow-400" />
                 <h3 className="font-semibold">Recommendations</h3>
@@ -144,15 +147,44 @@ export default function AdminReportDetailPage() {
             </div>
           )}
 
-          <div className="p-5 rounded-xl bg-card border border-border">
+          <div className="app-panel mb-8">
+            <div className="flex items-center gap-2 mb-4">
+              <Activity className="w-5 h-5 text-cyan-400" />
+              <h3 className="font-semibold">Generation Metrics</h3>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+              <div className="app-stat-tile">
+                <p className="text-xs text-muted">Gemini Calls</p>
+                <p className="text-xl font-bold">{metrics.gemini_calls ?? 0}</p>
+              </div>
+              <div className="app-stat-tile">
+                <p className="text-xs text-muted">Gemini Questions</p>
+                <p className="text-xl font-bold">{metrics.gemini_questions ?? 0}</p>
+              </div>
+              <div className="app-stat-tile">
+                <p className="text-xs text-muted">Bank Questions</p>
+                <p className="text-xl font-bold">{metrics.bank_questions ?? 0}</p>
+              </div>
+              <div className="app-stat-tile">
+                <p className="text-xs text-muted">Bank Shortfall</p>
+                <p className="text-xl font-bold">{metrics.bank_shortfall ?? 0}</p>
+              </div>
+              <div className="app-stat-tile">
+                <p className="text-xs text-muted">Gen Batches</p>
+                <p className="text-xl font-bold">{metrics.generation_batches ?? 0}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="app-panel">
             <div className="flex items-center gap-2 mb-4">
               <BarChart3 className="w-5 h-5 text-muted" />
               <h3 className="font-semibold">Question Breakdown</h3>
             </div>
             <div className="space-y-3">
               {(report.detailed_scores || []).map((qs, i) => (
-                <div key={i} className="rounded-lg bg-background border border-border overflow-hidden">
-                  <button className="w-full p-4 text-left flex items-center justify-between" onClick={() => setExpandedQ(expandedQ === i ? null : i)}>
+                <div key={i} className="rounded-lg bg-background border border-border overflow-hidden animate-fade-in-soft">
+                  <button className="w-full p-4 text-left flex items-center justify-between hover:bg-white/5 transition-colors" onClick={() => setExpandedQ(expandedQ === i ? null : i)}>
                     <div className="flex-1 pr-4">
                       <p className="text-sm font-medium truncate">{qs.question}</p>
                     </div>

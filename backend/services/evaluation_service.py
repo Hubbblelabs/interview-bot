@@ -16,6 +16,13 @@ def _json_safe(value):
     return value
 
 
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
 async def generate_report(session_id: str, user_id: str) -> dict:
     """Generate final evaluation report from Redis Q&A data using Gemini."""
     db = get_db()
@@ -40,6 +47,8 @@ async def generate_report(session_id: str, user_id: str) -> dict:
     session_status = session.get("status", "completed")
     quit_at = session.get("quit_at")
 
+    redis_session = await redis.hgetall(f"session:{session_id}")
+
     # Get all Q&A from Redis
     qa_pairs = await get_session_qa(session_id)
     if not qa_pairs:
@@ -62,6 +71,13 @@ async def generate_report(session_id: str, user_id: str) -> dict:
         "strengths": evaluation.get("strengths", []),
         "weaknesses": evaluation.get("weaknesses", []),
         "recommendations": evaluation.get("recommendations", []),
+        "generation_stats": {
+            "gemini_calls": _safe_int((redis_session or {}).get("metrics_gemini_calls", 0)),
+            "gemini_questions": _safe_int((redis_session or {}).get("metrics_gemini_questions", 0)),
+            "bank_questions": _safe_int((redis_session or {}).get("metrics_bank_questions", 0)),
+            "bank_shortfall": _safe_int((redis_session or {}).get("metrics_bank_shortfall", 0)),
+            "generation_batches": _safe_int((redis_session or {}).get("metrics_generation_batches", 0)),
+        },
         "completed_at": utc_now(),
     }
     inserted = await db[RESULTS].insert_one(result_doc)

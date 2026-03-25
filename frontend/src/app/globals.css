@@ -100,6 +100,31 @@
   .vibrate {
     animation: vibrate 0.2s linear infinite;
   }
+
+  /* App-wide simple UI primitives */
+  .app-panel {
+    @apply rounded-xl border border-border bg-card p-4 shadow-sm;
+  }
+
+  .app-stat-tile {
+    @apply rounded-lg border border-border bg-background p-3 transition-colors;
+  }
+
+  .app-control {
+    @apply w-full bg-white border border-border rounded-lg px-4 py-2.5 text-sm text-foreground focus:outline-none focus:border-primary;
+  }
+
+  .app-list-item {
+    @apply block p-5 rounded-xl bg-card border border-border transition-all duration-200 hover:border-primary/40 hover:shadow-sm;
+  }
+
+  .app-btn {
+    @apply px-3 py-1.5 rounded-lg border border-border text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:border-primary/40;
+  }
+
+  .app-section-title {
+    @apply text-sm text-muted tracking-wide;
+  }
 }
 
 @layer utilities {
@@ -109,6 +134,10 @@
   
   .animate-slide-up {
     animation: slideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+
+  .animate-fade-in-soft {
+    animation: fadeInSoft 0.35s ease-out forwards;
   }
 }
 
@@ -122,10 +151,23 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes fadeInSoft {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 @keyframes vibrate {
   0% { transform: translate(0); }
   25% { transform: translate(2px, 2px); }
   50% { transform: translate(-2px, -2px); }
   75% { transform: translate(2px, -2px); }
   100% { transform: translate(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in,
+  .animate-slide-up,
+  .animate-fade-in-soft {
+    animation: none !important;
+  }
 }

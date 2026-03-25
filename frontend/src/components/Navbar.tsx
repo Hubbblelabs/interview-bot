@@ -159,7 +159,7 @@ export default function Navbar() {
           <div className="flex items-center gap-1">
             <NavLink href="/dashboard" icon={UserIcon} label="Dashboard" />
             <NavLink href="/reports" icon={BarChart3} label="Reports" />
-            <NavLink href="/user-detail" icon={Settings} label="User Detail" />
+            <NavLink href="/settings" icon={Settings} label="Settings" />
           </div>
         </div>
 

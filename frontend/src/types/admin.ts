@@ -60,6 +60,13 @@ export interface AdminReportSummary {
   completed_at: string;
   session_status: string;
   is_quit: boolean;
+  generation_stats?: {
+    gemini_calls?: number;
+    gemini_questions?: number;
+    bank_questions?: number;
+    bank_shortfall?: number;
+    generation_batches?: number;
+  };
 }
 
 export type Difficulty = "easy" | "medium" | "hard";
@@ -77,4 +84,11 @@ export interface AdminReportDetail extends InterviewReport {
   session_status?: string;
   is_quit?: boolean;
   quit_at?: string | null;
+  generation_stats?: {
+    gemini_calls?: number;
+    gemini_questions?: number;
+    bank_questions?: number;
+    bank_shortfall?: number;
+    generation_batches?: number;
+  };
 }

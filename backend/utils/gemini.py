@@ -180,6 +180,197 @@ Return ONLY valid JSON, no markdown formatting."""
         }
 
 
+async def generate_interview_question_batch(
+    skills: list,
+    role_title: str,
+    count: int,
+    start_question_number: int = 1,
+    previous_questions: list = None,
+    foundation_limit: int = 3,
+) -> list:
+    """Generate a batch of interview questions in a single Gemini call."""
+    previous_questions = previous_questions or []
+    count = max(0, int(count or 0))
+    if count == 0:
+        return []
+
+    plan = []
+    for i in range(count):
+        qn = start_question_number + i
+        difficulty = "easy" if qn <= foundation_limit else ("medium" if qn <= foundation_limit + 3 else "hard")
+        stage = "foundation" if qn <= foundation_limit else "deep"
+        plan.append({"question_number": qn, "difficulty": difficulty, "stage": stage})
+
+    context = (
+        f"Role: {role_title}\n"
+        f"Candidate Skill Focus Areas: {', '.join(skills)}\n"
+        f"Question Plan: {json.dumps(plan)}\n"
+        f"Foundation Question Limit: {foundation_limit}"
+    )
+
+    if previous_questions:
+        context += "\n\nPrevious questions asked (do NOT repeat these):\n"
+        for i, q in enumerate(previous_questions, 1):
+            context += f"{i}. {q}\n"
+
+    prompt_template = PromptTemplate.from_template(
+        """{context}
+
+Generate exactly {count} interview questions as a JSON array where each item follows the corresponding Question Plan entry.
+
+Rules:
+1. Questions must be relevant to the role and listed skills.
+2. Do not repeat or rephrase previous questions.
+3. If stage is "foundation": ask only core fundamentals.
+4. If stage is "deep": ask applied/scenario/debugging/trade-off questions only.
+5. Rotate topics across skills to avoid repetitive focus.
+6. If a skill is a cluster label like "Deep Learning (CNN, LSTM)", ask about one concrete member skill.
+
+Return ONLY valid JSON array with objects of shape:
+- "question": string
+- "difficulty": one of "easy" | "medium" | "hard"
+- "category": string
+
+Return ONLY JSON, no markdown."""
+    )
+    prompt = prompt_template.format(context=context, count=count)
+
+    result = (await call_gemini(prompt)).strip()
+    try:
+        data = json.loads(result)
+        if not isinstance(data, list):
+            raise ValueError("Batch response is not a list")
+        normalized = []
+        for i, item in enumerate(data[:count]):
+            spec = plan[i]
+            if not isinstance(item, dict):
+                item = {}
+            normalized.append(
+                {
+                    "question": item.get("question") or f"Explain your approach for {skills[0] if skills else 'this topic'}.",
+                    "difficulty": item.get("difficulty") if item.get("difficulty") in {"easy", "medium", "hard"} else spec["difficulty"],
+                    "category": item.get("category") or "general",
+                }
+            )
+        while len(normalized) < count:
+            spec = plan[len(normalized)]
+            normalized.append(
+                {
+                    "question": f"Tell me about your experience with {skills[0] if skills else 'software development'}.",
+                    "difficulty": spec["difficulty"],
+                    "category": "general",
+                }
+            )
+        return normalized
+    except Exception:
+        fallback = []
+        for i in range(count):
+            spec = plan[i]
+            fallback.append(
+                {
+                    "question": f"Tell me about your experience with {skills[0] if skills else 'software development'}.",
+                    "difficulty": spec["difficulty"],
+                    "category": "general",
+                }
+            )
+        return fallback
+
+
+async def generate_followup_question_batch_from_qa(
+    role_title: str,
+    skills: list,
+    qa_pairs: list,
+    previous_questions: list,
+    count: int,
+    difficulty: str = "medium",
+) -> list:
+    """Generate follow-up questions from interview Q&A context in a single Gemini call."""
+    count = max(0, int(count or 0))
+    if count == 0:
+        return []
+
+    compact_qa = []
+    for qa in qa_pairs[-8:]:
+        q = (qa or {}).get("question", "")
+        a = (qa or {}).get("answer", "")
+        if q and a:
+            compact_qa.append({"question": q, "answer": a})
+
+    payload = {
+        "role_title": role_title,
+        "skills": skills,
+        "difficulty": difficulty,
+        "count": count,
+        "answered_qa": compact_qa,
+        "previous_questions": previous_questions,
+    }
+
+    prompt_template = PromptTemplate.from_template(
+        """You are generating technical interview follow-up questions.
+
+Input JSON:
+{payload}
+
+Instructions:
+1. Generate exactly {count} follow-up questions using answered_qa context.
+2. Questions must continue naturally from candidate's previous answers.
+3. Do not repeat or paraphrase any question in previous_questions.
+4. Keep questions practical and role-relevant.
+5. Use difficulty {difficulty}.
+
+Return ONLY valid JSON array with objects:
+- "question": string
+- "difficulty": "easy" | "medium" | "hard"
+- "category": string
+
+No markdown, no extra text."""
+    )
+    prompt = prompt_template.format(
+        payload=json.dumps(payload, ensure_ascii=True),
+        count=count,
+        difficulty=difficulty,
+    )
+
+    result = (await call_gemini(prompt)).strip()
+    try:
+        data = json.loads(result)
+        if not isinstance(data, list):
+            raise ValueError("Follow-up batch response is not a list")
+
+        normalized = []
+        for item in data[:count]:
+            if not isinstance(item, dict):
+                item = {}
+            normalized.append(
+                {
+                    "question": item.get("question") or f"Can you explain your approach for {skills[0] if skills else 'this scenario'}?",
+                    "difficulty": item.get("difficulty") if item.get("difficulty") in {"easy", "medium", "hard"} else difficulty,
+                    "category": item.get("category") or "follow-up",
+                }
+            )
+
+        while len(normalized) < count:
+            normalized.append(
+                {
+                    "question": f"Can you explain your approach for {skills[0] if skills else 'this scenario'}?",
+                    "difficulty": difficulty,
+                    "category": "follow-up",
+                }
+            )
+        return normalized
+    except Exception:
+        fallback = []
+        for _ in range(count):
+            fallback.append(
+                {
+                    "question": f"Can you explain your approach for {skills[0] if skills else 'this scenario'}?",
+                    "difficulty": difficulty,
+                    "category": "follow-up",
+                }
+            )
+        return fallback
+
+
 async def evaluate_interview(questions_and_answers: list, role_title: str) -> dict:
     """Batch evaluate all interview Q&A pairs using Gemini."""
     qa_text = ""

@@ -5,7 +5,14 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Navbar from "@/components/Navbar";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import api from "@/lib/api";
-import { speak, stopSpeaking, createSpeechRecognition, isSpeechRecognitionSupported, SpeechVoiceGender } from "@/lib/speech";
+import {
+  speak,
+  stopSpeaking,
+  createSpeechRecognition,
+  isSpeechRecognitionSupported,
+  SpeechVoiceGender,
+  warmupSpeechVoices,
+} from "@/lib/speech";
 import {
   Mic,
   MicOff,
@@ -60,6 +67,7 @@ function InterviewContent() {
   const [generatingReport, setGeneratingReport] = useState(false);
   const [isQuitting, setIsQuitting] = useState(false);
   const [voiceGender, setVoiceGender] = useState<SpeechVoiceGender>("female");
+  const [voiceReady, setVoiceReady] = useState(false);
 
   const recognitionRef = useRef<any>(null);
   const hasSpokenRef = useRef(false);
@@ -67,11 +75,11 @@ function InterviewContent() {
   const [isSpeechStepComplete, setIsSpeechStepComplete] = useState(!sttSupported);
 
   useEffect(() => {
-    if (currentQuestion && !hasSpokenRef.current) {
+    if (currentQuestion && voiceReady && !hasSpokenRef.current) {
       hasSpokenRef.current = true;
       playQuestion();
     }
-  }, [currentQuestion]);
+  }, [currentQuestion, voiceReady]);
 
   useEffect(() => {
     const localVoice = localStorage.getItem("speech_voice_gender") as SpeechVoiceGender | null;
@@ -89,6 +97,9 @@ function InterviewContent() {
         }
       } catch {
         // Keep local/default voice if profile fetch fails.
+      } finally {
+        await warmupSpeechVoices();
+        setVoiceReady(true);
       }
     };
 

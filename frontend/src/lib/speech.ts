@@ -18,6 +18,8 @@ export const isSpeechRecognitionSupported = () => {
 
 // Text-to-Speech
 let synthesisUtterance: SpeechSynthesisUtterance | null = null;
+let speakRequestId = 0;
+const preferredVoiceUriByGender: Partial<Record<SpeechVoiceGender, string>> = {};
 
 const FEMALE_HINTS = ["female", "woman", "samantha", "zira", "aria", "jenny", "karen", "susan"];
 const MALE_HINTS = ["male", "man", "david", "mark", "guy", "ryan", "adam", "george"];
@@ -56,6 +58,57 @@ const pickBestVoice = (voices: SpeechSynthesisVoice[], voiceGender: SpeechVoiceG
   return [...voices].sort((a, b) => scoreVoice(b, voiceGender) - scoreVoice(a, voiceGender))[0] || null;
 };
 
+const waitForVoices = (timeoutMs = 1200): Promise<SpeechSynthesisVoice[]> => {
+  return new Promise((resolve) => {
+    if (!isSpeechSynthesisSupported()) {
+      resolve([]);
+      return;
+    }
+
+    const existing = window.speechSynthesis.getVoices();
+    if (existing.length) {
+      resolve(existing);
+      return;
+    }
+
+    // Trigger browser to load voice list.
+    window.speechSynthesis.getVoices();
+
+    let settled = false;
+    const finish = (voices: SpeechSynthesisVoice[]) => {
+      if (settled) return;
+      settled = true;
+      window.speechSynthesis.removeEventListener("voiceschanged", onVoicesChanged);
+      resolve(voices);
+    };
+
+    const onVoicesChanged = () => {
+      finish(window.speechSynthesis.getVoices());
+    };
+
+    window.speechSynthesis.addEventListener("voiceschanged", onVoicesChanged);
+    setTimeout(() => finish(window.speechSynthesis.getVoices()), timeoutMs);
+  });
+};
+
+export const warmupSpeechVoices = async () => {
+  await waitForVoices();
+};
+
+const resolvePreferredVoice = (voices: SpeechSynthesisVoice[], voiceGender: SpeechVoiceGender) => {
+  const cachedUri = preferredVoiceUriByGender[voiceGender];
+  if (cachedUri) {
+    const cached = voices.find((v) => v.voiceURI === cachedUri);
+    if (cached) return cached;
+  }
+
+  const picked = pickBestVoice(voices, voiceGender);
+  if (picked) {
+    preferredVoiceUriByGender[voiceGender] = picked.voiceURI;
+  }
+  return picked;
+};
+
 export const speak = (text: string, onEnd?: () => void, options?: SpeakOptions) => {
   if (!isSpeechSynthesisSupported()) {
     console.warn("Speech synthesis is not supported in this browser.");
@@ -63,39 +116,44 @@ export const speak = (text: string, onEnd?: () => void, options?: SpeakOptions) 
     return;
   }
 
-  // Stop any currently playing speech
+  // Stop any currently playing speech and create an id so stale async plays are ignored.
   stopSpeaking();
-
-  synthesisUtterance = new SpeechSynthesisUtterance(text);
+  const requestId = ++speakRequestId;
 
   const voiceGender = options?.voiceGender || "auto";
 
-  // Pick a higher quality English voice with optional gender preference.
-  const voices = window.speechSynthesis.getVoices();
-  const preferredVoice = pickBestVoice(voices, voiceGender);
-  if (preferredVoice) {
-    synthesisUtterance.voice = preferredVoice;
-  }
+  void (async () => {
+    const voices = await waitForVoices();
+    if (requestId !== speakRequestId) return;
 
-  if (options?.style === "assistant") {
-    synthesisUtterance.rate = 0.94;
-    synthesisUtterance.pitch = voiceGender === "male" ? 0.9 : 1.0;
-    synthesisUtterance.volume = 1.0;
-  } else {
-    synthesisUtterance.rate = 1.0;
-    synthesisUtterance.pitch = 1.0;
-    synthesisUtterance.volume = 1.0;
-  }
+    synthesisUtterance = new SpeechSynthesisUtterance(text);
 
-  if (onEnd) {
-    synthesisUtterance.onend = onEnd;
-    synthesisUtterance.onerror = onEnd;
-  }
+    const preferredVoice = resolvePreferredVoice(voices, voiceGender);
+    if (preferredVoice) {
+      synthesisUtterance.voice = preferredVoice;
+    }
 
-  window.speechSynthesis.speak(synthesisUtterance);
+    if (options?.style === "assistant") {
+      synthesisUtterance.rate = 0.94;
+      synthesisUtterance.pitch = voiceGender === "male" ? 0.9 : 1.0;
+      synthesisUtterance.volume = 1.0;
+    } else {
+      synthesisUtterance.rate = 1.0;
+      synthesisUtterance.pitch = 1.0;
+      synthesisUtterance.volume = 1.0;
+    }
+
+    if (onEnd) {
+      synthesisUtterance.onend = onEnd;
+      synthesisUtterance.onerror = onEnd;
+    }
+
+    window.speechSynthesis.speak(synthesisUtterance);
+  })();
 };
 
 export const stopSpeaking = () => {
+  speakRequestId += 1;
   if (isSpeechSynthesisSupported()) {
     window.speechSynthesis.cancel();
     synthesisUtterance = null;

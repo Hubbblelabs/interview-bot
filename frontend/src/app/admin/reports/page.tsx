@@ -15,6 +15,7 @@ export default function AdminReportsPage() {
   const [nameFilter, setNameFilter] = useState("");
   const [topicFilter, setTopicFilter] = useState("all");
   const [performanceFilter, setPerformanceFilter] = useState<"all" | "top" | "low">("all");
+  const [rangeFilter, setRangeFilter] = useState<"all" | "7" | "30" | "90">("30");
 
   const pageSize = 8;
 
@@ -39,11 +40,23 @@ export default function AdminReportsPage() {
     return "text-red-400";
   };
 
+  const isInRange = (completedAt: string) => {
+    if (rangeFilter === "all") return true;
+    const days = Number(rangeFilter);
+    if (!days) return true;
+    const dt = new Date(completedAt);
+    if (Number.isNaN(dt.getTime())) return false;
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+    return dt.getTime() >= cutoff;
+  };
+
+  const rangeFilteredItems = items.filter((item) => isInRange(item.completed_at));
+
   const availableTopics = Array.from(
-    new Set(items.map((item) => item.role_title?.trim()).filter((v): v is string => !!v))
+    new Set(rangeFilteredItems.map((item) => item.role_title?.trim()).filter((v): v is string => !!v))
   ).sort((a, b) => a.localeCompare(b));
 
-  const filteredItems = items.filter((item) => {
+  const filteredItems = rangeFilteredItems.filter((item) => {
     const byName = !nameFilter.trim() || item.user_name.toLowerCase().includes(nameFilter.trim().toLowerCase());
     const byTopic = topicFilter === "all" || item.role_title === topicFilter;
     const byPerf =
@@ -71,7 +84,7 @@ export default function AdminReportsPage() {
             <h1 className="text-2xl font-bold">Interview Reports</h1>
           </div>
 
-          <div className="rounded-xl border border-border bg-card p-4 mb-5 grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="app-panel mb-5 grid grid-cols-1 md:grid-cols-4 gap-3 animate-fade-in-soft">
             <input
               value={nameFilter}
               onChange={(e) => {
@@ -79,6 +92,7 @@ export default function AdminReportsPage() {
                 setPage(1);
               }}
               placeholder="Filter by name"
+              className="app-control"
             />
             <select
               value={topicFilter}
@@ -86,6 +100,7 @@ export default function AdminReportsPage() {
                 setTopicFilter(e.target.value);
                 setPage(1);
               }}
+              className="app-control"
             >
               <option value="all">All Topics</option>
               {availableTopics.map((topic) => (
@@ -98,10 +113,25 @@ export default function AdminReportsPage() {
                 setPerformanceFilter(e.target.value as "all" | "top" | "low");
                 setPage(1);
               }}
+              className="app-control"
             >
               <option value="all">All Performance</option>
               <option value="top">Top Performance (&gt;= 70)</option>
               <option value="low">Low Performance (&lt; 40)</option>
+            </select>
+            <select
+              value={rangeFilter}
+              onChange={(e) => {
+                setRangeFilter(e.target.value as "all" | "7" | "30" | "90");
+                setPage(1);
+                setTopicFilter("all");
+              }}
+              className="app-control"
+            >
+              <option value="all">All Time</option>
+              <option value="7">Last 7 Days</option>
+              <option value="30">Last 30 Days</option>
+              <option value="90">Last 90 Days</option>
             </select>
           </div>
 
@@ -119,7 +149,7 @@ export default function AdminReportsPage() {
                 <Link
                   key={item.session_id}
                   href={`/admin/reports/${item.session_id}`}
-                  className="block p-5 rounded-xl bg-card border border-border hover:border-white/20 transition-colors"
+                  className="app-list-item"
                 >
                   <div className="flex items-center justify-between">
                     <div>
@@ -145,7 +175,7 @@ export default function AdminReportsPage() {
                   <button
                     onClick={() => setPage((p) => Math.max(1, p - 1))}
                     disabled={page === 1}
-                    className="px-3 py-1.5 rounded-lg border border-border text-sm disabled:opacity-40"
+                    className="app-btn"
                   >
                     Prev
                   </button>
@@ -153,7 +183,7 @@ export default function AdminReportsPage() {
                   <button
                     onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                     disabled={page === totalPages}
-                    className="px-3 py-1.5 rounded-lg border border-border text-sm disabled:opacity-40"
+                    className="app-btn"
                   >
                     Next
                   </button>

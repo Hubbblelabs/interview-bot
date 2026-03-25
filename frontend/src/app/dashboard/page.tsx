@@ -182,10 +182,10 @@ export default function DashboardPage() {
                     </div>
                   </div>
                   <Link
-                    href="/user-detail"
+                    href="/settings"
                     className="px-5 py-2.5 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-sm font-semibold transition-colors whitespace-nowrap"
                   >
-                    Go to User Detail
+                    Go to Settings
                   </Link>
                 </div>
               ) : (

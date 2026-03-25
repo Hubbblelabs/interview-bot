@@ -5,6 +5,7 @@ import Navbar from "@/components/Navbar";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import api from "@/lib/api";
 import { Profile } from "@/types";
+import { SpeechVoiceGender } from "@/lib/speech";
 import { Settings, Upload, User, Zap, CheckCircle, Loader2 } from "lucide-react";
 import { PageSkeleton } from "@/components/Skeleton";
 
@@ -29,6 +30,8 @@ export default function SettingsPage() {
     location: ""
   });
   const [savingData, setSavingData] = useState(false);
+  const [voiceGender, setVoiceGender] = useState<SpeechVoiceGender>("female");
+  const [savingVoice, setSavingVoice] = useState(false);
 
   useEffect(() => {
     fetchProfile();
@@ -49,10 +52,38 @@ export default function SettingsPage() {
           location: data.resume.parsed_data.location || ""
         });
       }
+      const savedVoice = (data?.speech_settings?.voice_gender || "female") as SpeechVoiceGender;
+      if (savedVoice === "male" || savedVoice === "female" || savedVoice === "auto") {
+        setVoiceGender(savedVoice);
+        localStorage.setItem("speech_voice_gender", savedVoice);
+      }
     } catch (err) {
       console.error("Failed to fetch profile:", err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const saveVoiceSettings = async () => {
+    setSavingVoice(true);
+    try {
+      await api.put("/profile/speech-settings", { voice_gender: voiceGender });
+      localStorage.setItem("speech_voice_gender", voiceGender);
+      setProfile((prev) =>
+        prev
+          ? {
+              ...prev,
+              speech_settings: {
+                ...(prev.speech_settings || {}),
+                voice_gender: voiceGender,
+              },
+            }
+          : prev
+      );
+    } catch (err: any) {
+      alert(err.response?.data?.detail || "Failed to save voice setting");
+    } finally {
+      setSavingVoice(false);
     }
   };
 
@@ -146,7 +177,75 @@ export default function SettingsPage() {
         <div className="animate-fade-in">
           <div className="flex items-center gap-3 mb-6">
             <Settings className="w-6 h-6" />
-            <h1 className="text-2xl font-bold">User Detail</h1>
+            <h1 className="text-2xl font-bold">Settings</h1>
+          </div>
+
+          <div className="p-6 rounded-xl bg-card border border-border mb-6">
+            <h2 className="text-lg font-semibold mb-2">What you can manage here</h2>
+            <div className="text-sm text-muted space-y-1">
+              <p>1. Voice preference for interview audio (male/female)</p>
+              <p>2. Resume upload and re-upload</p>
+              <p>3. Resume details (name, email, phone, location)</p>
+              <p>4. Skills used for interview personalization</p>
+            </div>
+          </div>
+
+          <div className="p-6 rounded-xl bg-card border border-border mb-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold">Interview Voice</h2>
+              <button
+                onClick={saveVoiceSettings}
+                disabled={savingVoice}
+                className="px-3 py-1.5 bg-white text-black font-medium rounded-lg text-sm hover:bg-gray-200 transition-colors flex items-center gap-2 disabled:opacity-50"
+              >
+                {savingVoice ? (
+                  <>
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  "Save Voice"
+                )}
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <button
+                onClick={() => setVoiceGender("female")}
+                className={`text-left p-4 rounded-lg border transition-colors ${
+                  voiceGender === "female"
+                    ? "border-primary bg-primary/10"
+                    : "border-border hover:border-border-light"
+                }`}
+              >
+                <p className="font-medium">Female Voice</p>
+                <p className="text-xs text-muted mt-1">Clear, natural assistant style</p>
+              </button>
+
+              <button
+                onClick={() => setVoiceGender("male")}
+                className={`text-left p-4 rounded-lg border transition-colors ${
+                  voiceGender === "male"
+                    ? "border-primary bg-primary/10"
+                    : "border-border hover:border-border-light"
+                }`}
+              >
+                <p className="font-medium">Male Voice</p>
+                <p className="text-xs text-muted mt-1">Steady, interview-style delivery</p>
+              </button>
+
+              <button
+                onClick={() => setVoiceGender("auto")}
+                className={`text-left p-4 rounded-lg border transition-colors ${
+                  voiceGender === "auto"
+                    ? "border-primary bg-primary/10"
+                    : "border-border hover:border-border-light"
+                }`}
+              >
+                <p className="font-medium">Auto Voice</p>
+                <p className="text-xs text-muted mt-1">Best available browser voice</p>
+              </button>
+            </div>
           </div>
 
           <div className="p-6 rounded-xl bg-card border border-border mb-6">
