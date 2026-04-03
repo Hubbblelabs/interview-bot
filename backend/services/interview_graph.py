@@ -19,13 +19,11 @@ class InterviewGraphState(TypedDict, total=False):
     question_data: Dict[str, Any]
 
 
-FOUNDATION_QUESTION_LIMIT = 3
+FOUNDATION_QUESTION_LIMIT = 0
 
 
 def _difficulty_for_question_number(question_number: int, foundation_limit: int = FOUNDATION_QUESTION_LIMIT) -> str:
-    if question_number <= foundation_limit:
-        return "easy"
-    if question_number <= foundation_limit + 3:
+    if question_number <= 5:
         return "medium"
     return "hard"
 

@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Navbar from "@/components/Navbar";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import api from "@/lib/api";
-import { Profile } from "@/types";
+import { Profile, JobDescription } from "@/types";
 import { SpeechVoiceGender } from "@/lib/speech";
 import { Settings, Upload, User, Zap, CheckCircle, Loader2 } from "lucide-react";
 import { PageSkeleton } from "@/components/Skeleton";
@@ -32,9 +32,20 @@ export default function SettingsPage() {
   const [savingData, setSavingData] = useState(false);
   const [voiceGender, setVoiceGender] = useState<SpeechVoiceGender>("female");
   const [savingVoice, setSavingVoice] = useState(false);
+  const [jobDescriptions, setJobDescriptions] = useState<JobDescription[]>([]);
+  const [loadingJd, setLoadingJd] = useState(false);
+  const [savingJd, setSavingJd] = useState(false);
+  const [editingJdId, setEditingJdId] = useState<string | null>(null);
+  const [jdForm, setJdForm] = useState({
+    title: "",
+    company: "",
+    description: "",
+    requiredSkillsText: "",
+  });
 
   useEffect(() => {
     fetchProfile();
+    fetchJobDescriptions();
   }, []);
 
   const fetchProfile = async () => {
@@ -84,6 +95,84 @@ export default function SettingsPage() {
       alert(err.response?.data?.detail || "Failed to save voice setting");
     } finally {
       setSavingVoice(false);
+    }
+  };
+
+  const fetchJobDescriptions = async () => {
+    setLoadingJd(true);
+    try {
+      const { data } = await api.get("/profile/job-descriptions");
+      setJobDescriptions(data.items || []);
+    } catch (err) {
+      console.error("Failed to fetch job descriptions", err);
+    } finally {
+      setLoadingJd(false);
+    }
+  };
+
+  const resetJdForm = () => {
+    setEditingJdId(null);
+    setJdForm({
+      title: "",
+      company: "",
+      description: "",
+      requiredSkillsText: "",
+    });
+  };
+
+  const onEditJd = (item: JobDescription) => {
+    setEditingJdId(item.id);
+    setJdForm({
+      title: item.title || "",
+      company: item.company || "",
+      description: item.description || "",
+      requiredSkillsText: (item.required_skills || []).join(", "),
+    });
+  };
+
+  const saveJobDescription = async () => {
+    if (!jdForm.title.trim() || !jdForm.description.trim()) {
+      alert("Title and description are required");
+      return;
+    }
+    setSavingJd(true);
+    try {
+      const payload = {
+        title: jdForm.title.trim(),
+        company: jdForm.company.trim(),
+        description: jdForm.description.trim(),
+        required_skills: jdForm.requiredSkillsText
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+      };
+
+      if (editingJdId) {
+        await api.put(`/profile/job-descriptions/${editingJdId}`, payload);
+      } else {
+        await api.post("/profile/job-descriptions", payload);
+      }
+
+      resetJdForm();
+      fetchJobDescriptions();
+    } catch (err: any) {
+      alert(err.response?.data?.detail || "Failed to save job description");
+    } finally {
+      setSavingJd(false);
+    }
+  };
+
+  const deleteJobDescription = async (id: string) => {
+    const confirmed = window.confirm("Delete this job description?");
+    if (!confirmed) return;
+    try {
+      await api.delete(`/profile/job-descriptions/${id}`);
+      if (editingJdId === id) {
+        resetJdForm();
+      }
+      fetchJobDescriptions();
+    } catch (err: any) {
+      alert(err.response?.data?.detail || "Failed to delete job description");
     }
   };
 
@@ -184,9 +273,102 @@ export default function SettingsPage() {
             <h2 className="text-lg font-semibold mb-2">What you can manage here</h2>
             <div className="text-sm text-muted space-y-1">
               <p>1. Voice preference for interview audio (male/female)</p>
-              <p>2. Resume upload and re-upload</p>
-              <p>3. Resume details (name, email, phone, location)</p>
-              <p>4. Skills used for interview personalization</p>
+              <p>2. Job descriptions (create, edit, delete)</p>
+              <p>3. Resume upload and re-upload</p>
+              <p>4. Resume details (name, email, phone, location)</p>
+              <p>5. Skills used for interview personalization</p>
+            </div>
+          </div>
+
+          <div className="p-6 rounded-xl bg-card border border-border mb-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold">Job Descriptions</h2>
+              <button
+                onClick={resetJdForm}
+                className="px-3 py-1.5 bg-white/5 border border-border rounded-lg text-sm text-muted hover:text-white transition-colors"
+              >
+                New
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+              <input
+                type="text"
+                placeholder="JD title"
+                value={jdForm.title}
+                onChange={(e) => setJdForm((prev) => ({ ...prev, title: e.target.value }))}
+              />
+              <input
+                type="text"
+                placeholder="Company (optional)"
+                value={jdForm.company}
+                onChange={(e) => setJdForm((prev) => ({ ...prev, company: e.target.value }))}
+              />
+            </div>
+            <textarea
+              rows={5}
+              placeholder="Paste job description text"
+              value={jdForm.description}
+              onChange={(e) => setJdForm((prev) => ({ ...prev, description: e.target.value }))}
+              className="mb-3"
+            />
+            <input
+              type="text"
+              placeholder="Required skills (comma separated)"
+              value={jdForm.requiredSkillsText}
+              onChange={(e) => setJdForm((prev) => ({ ...prev, requiredSkillsText: e.target.value }))}
+            />
+
+            <div className="mt-3 flex items-center gap-2">
+              <button
+                onClick={saveJobDescription}
+                disabled={savingJd}
+                className="px-3 py-1.5 bg-white text-black font-medium rounded-lg text-sm hover:bg-gray-200 transition-colors disabled:opacity-50"
+              >
+                {savingJd ? "Saving..." : editingJdId ? "Update JD" : "Save JD"}
+              </button>
+              {editingJdId && (
+                <button
+                  onClick={resetJdForm}
+                  className="px-3 py-1.5 bg-transparent text-sm text-muted hover:text-white transition-colors"
+                >
+                  Cancel Edit
+                </button>
+              )}
+            </div>
+
+            <div className="mt-5 space-y-3">
+              {loadingJd ? (
+                <p className="text-sm text-muted">Loading job descriptions...</p>
+              ) : jobDescriptions.length === 0 ? (
+                <p className="text-sm text-muted">No job descriptions yet. Add one to improve interview targeting.</p>
+              ) : (
+                jobDescriptions.map((item) => (
+                  <div key={item.id} className="p-4 rounded-lg border border-border bg-background">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-medium">{item.title}</p>
+                        <p className="text-xs text-muted mt-1">{item.company || "No company"}</p>
+                        <p className="text-xs text-muted mt-2 line-clamp-2">{item.description}</p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          onClick={() => onEditJd(item)}
+                          className="px-2 py-1 text-xs rounded border border-border hover:border-border-light"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => deleteJobDescription(item.id)}
+                          className="px-2 py-1 text-xs rounded border border-red-500/40 text-red-400 hover:bg-red-500/10"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </div>
 

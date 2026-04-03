@@ -3,7 +3,7 @@ import json
 import re
 from datetime import datetime
 from database import get_db
-from models.collections import JOB_ROLES, ROLE_REQUIREMENTS, QUESTIONS, TOPICS, TOPIC_QUESTIONS, SESSIONS, USERS, RESULTS, RESUMES, SKILLS, ANSWERS
+from models.collections import JOB_ROLES, ROLE_REQUIREMENTS, QUESTIONS, TOPICS, TOPIC_QUESTIONS, SESSIONS, USERS, RESULTS, RESUMES, SKILLS, ANSWERS, JOB_DESCRIPTIONS
 from utils.helpers import utc_now, str_objectid, str_objectids
 from utils.gemini import call_gemini
 from utils.resume_text import extract_resume_text
@@ -625,6 +625,7 @@ async def delete_admin_user(target_user_id: str, current_admin_user_id: str) -> 
 
     await db[RESUMES].delete_many({"user_id": target_user_id})
     await db[SKILLS].delete_many({"user_id": target_user_id})
+    await db[JOB_DESCRIPTIONS].delete_many({"user_id": target_user_id})
     await db[SESSIONS].delete_many({"user_id": target_user_id})
     await db[ANSWERS].delete_many({"user_id": target_user_id})
     await db[RESULTS].delete_many({"user_id": target_user_id})

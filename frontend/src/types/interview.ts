@@ -12,6 +12,7 @@ export interface InterviewStartResponse {
   session_id: string;
   question: InterviewQuestion;
   message: string;
+  job_description_id?: string;
 }
 
 export interface AnswerResponse {

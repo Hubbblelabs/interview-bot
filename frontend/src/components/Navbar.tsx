@@ -13,6 +13,7 @@ import {
   FileText,
   Send,
   Users,
+  Briefcase,
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
@@ -98,6 +99,7 @@ export default function Navbar() {
               <NavLink href="/admin" icon={BarChart3} label="Dashboard" />
               <NavLink href="/admin/topics" icon={Tags} label="Topics" />
               <NavLink href="/admin/questions" icon={FileSignature} label="Questions" />
+              <NavLink href="/admin/job-descriptions" icon={Briefcase} label="Job Descriptions" />
               <NavLink href="/admin/interviews" icon={Send} label="Make Interview" />
               <NavLink href="/admin/reports" icon={FileText} label="Reports" />
               <NavLink href="/admin/users" icon={Users} label="Users" />

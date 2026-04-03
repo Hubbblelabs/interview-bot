@@ -7,6 +7,13 @@ class StartInterviewRequest(BaseModel):
     custom_role: Optional[str] = None
     interview_type: Optional[str] = "resume"
     topic_id: Optional[str] = None
+    job_description_id: Optional[str] = None
+
+
+class VerifyResumeJdRequest(BaseModel):
+    role_id: Optional[str] = None
+    custom_role: Optional[str] = None
+    job_description_id: str
 
 
 class SubmitAnswerRequest(BaseModel):

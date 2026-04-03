@@ -29,6 +29,7 @@ import {
   AlertTriangle,
   Lock,
 } from "lucide-react";
+import { JobDescriptionAlignment } from "@/types";
 
 const normalizeText = (value: string) =>
   (value || "")
@@ -68,6 +69,7 @@ function InterviewContent() {
   const [isQuitting, setIsQuitting] = useState(false);
   const [voiceGender, setVoiceGender] = useState<SpeechVoiceGender>("female");
   const [voiceReady, setVoiceReady] = useState(false);
+  const [jdAlignment, setJdAlignment] = useState<JobDescriptionAlignment | null>(null);
 
   const recognitionRef = useRef<any>(null);
   const hasSpokenRef = useRef(false);
@@ -105,6 +107,18 @@ function InterviewContent() {
 
     loadVoiceFromProfile();
   }, []);
+
+  useEffect(() => {
+    if (!sessionId || typeof window === "undefined") return;
+    const raw = sessionStorage.getItem(`jd_alignment:${sessionId}`);
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw);
+      setJdAlignment(parsed);
+    } catch {
+      // ignore parse failures
+    }
+  }, [sessionId]);
 
   useEffect(() => {
     if (!timerEnabled || isComplete || isTimeUp) return;
@@ -365,6 +379,74 @@ function InterviewContent() {
               </div>
             </div>
           </div>
+
+          {jdAlignment && (
+            <section className="mb-6 rounded-2xl border border-sky-200/60 bg-gradient-to-br from-sky-50/60 via-white to-indigo-50/50 p-5 shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.15em] text-sky-700/70 mb-1">Interview Match Review</p>
+                  <h3 className="text-lg font-semibold text-slate-800">Resume vs Job Description</h3>
+                </div>
+                <div className="inline-flex items-center gap-2 rounded-full border border-sky-300/60 bg-white/90 px-3 py-1 text-xs font-semibold text-sky-700">
+                  <CheckCircle className="w-3.5 h-3.5" />
+                  Verified Snapshot
+                </div>
+              </div>
+
+              {jdAlignment.fit_summary && (
+                <div className="mb-4 rounded-xl border border-sky-200/70 bg-white/90 px-4 py-3">
+                  <p className="text-sm leading-relaxed text-slate-700">{jdAlignment.fit_summary}</p>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <CheckCircle className="w-4 h-4 text-emerald-600" />
+                    <p className="font-semibold text-emerald-700">Meeting</p>
+                  </div>
+                  <ul className="space-y-1.5 text-slate-700 leading-relaxed">
+                    {(jdAlignment.meeting_expectations || []).slice(0, 5).map((item, idx) => (
+                      <li key={idx}>- {item}</li>
+                    ))}
+                    {(jdAlignment.meeting_expectations || []).length === 0 && (
+                      <li>- No strong matched items found yet.</li>
+                    )}
+                  </ul>
+                </div>
+
+                <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-600" />
+                    <p className="font-semibold text-amber-700">Missing</p>
+                  </div>
+                  <ul className="space-y-1.5 text-slate-700 leading-relaxed">
+                    {(jdAlignment.missing_expectations || []).slice(0, 5).map((item, idx) => (
+                      <li key={idx}>- {item}</li>
+                    ))}
+                    {(jdAlignment.missing_expectations || []).length === 0 && (
+                      <li>- No major concept gaps identified.</li>
+                    )}
+                  </ul>
+                </div>
+
+                <div className="rounded-xl border border-blue-200 bg-blue-50/70 p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <ChevronRight className="w-4 h-4 text-blue-600" />
+                    <p className="font-semibold text-blue-700">What Will Help</p>
+                  </div>
+                  <ul className="space-y-1.5 text-slate-700 leading-relaxed">
+                    {(jdAlignment.improvement_suggestions || []).slice(0, 5).map((item, idx) => (
+                      <li key={idx}>- {item}</li>
+                    ))}
+                    {(jdAlignment.improvement_suggestions || []).length === 0 && (
+                      <li>- Keep refining project depth and impact examples.</li>
+                    )}
+                  </ul>
+                </div>
+              </div>
+            </section>
+          )}
 
           <div className="p-6 rounded-xl bg-card border border-border mb-6">
             <div className="flex items-start justify-between gap-4">

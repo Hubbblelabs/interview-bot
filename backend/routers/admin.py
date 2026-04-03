@@ -16,6 +16,12 @@ from services.admin_service import (
     list_quit_interviews, list_admin_reports, get_admin_report_detail,
     list_admin_users, delete_admin_user,
 )
+from services.job_description_service import (
+    create_job_description,
+    list_admin_job_descriptions,
+    update_admin_job_description,
+    delete_admin_job_description,
+)
 from services.analytics_service import get_admin_analytics
 
 router = APIRouter()
@@ -352,6 +358,63 @@ async def get_admin_users(
     """List users for admin management."""
     items = await list_admin_users(limit=limit)
     return {"items": items}
+
+
+@router.get("/job-descriptions")
+async def get_admin_job_descriptions(
+    owner_user_id: str = Query(None),
+    current_user: dict = Depends(require_role("admin")),
+):
+    """List job descriptions for admin management."""
+    items = await list_admin_job_descriptions(owner_user_id=owner_user_id)
+    return {"items": items}
+
+
+@router.post("/job-descriptions")
+async def create_admin_job_description_endpoint(
+    request_data: dict,
+    current_user: dict = Depends(require_role("admin")),
+):
+    """Create a job description as admin."""
+    try:
+        item = await create_job_description(
+            user_id=current_user["user_id"],
+            owner_role="admin",
+            title=request_data.get("title"),
+            company=request_data.get("company"),
+            description=request_data.get("description"),
+            required_skills=request_data.get("required_skills"),
+        )
+        return item
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.put("/job-descriptions/{jd_id}")
+async def update_admin_job_description_endpoint(
+    jd_id: str,
+    request_data: dict,
+    current_user: dict = Depends(require_role("admin")),
+):
+    """Update any job description (admin only)."""
+    try:
+        item = await update_admin_job_description(jd_id, request_data)
+        return item
+    except ValueError as e:
+        status_code = 404 if "not found" in str(e).lower() else 400
+        raise HTTPException(status_code=status_code, detail=str(e))
+
+
+@router.delete("/job-descriptions/{jd_id}")
+async def delete_admin_job_description_endpoint(
+    jd_id: str,
+    current_user: dict = Depends(require_role("admin")),
+):
+    """Delete any job description (admin only)."""
+    success = await delete_admin_job_description(jd_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Job description not found")
+    return {"message": "Job description deleted"}
 
 
 @router.delete("/users/{user_id}")

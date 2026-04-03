@@ -2,12 +2,18 @@ from fastapi import APIRouter, Depends, HTTPException
 from auth.jwt import get_current_user
 from schemas.interview import (
     StartInterviewRequest,
+    VerifyResumeJdRequest,
     SubmitAnswerRequest,
     QuitInterviewRequest,
     InterviewStartResponse,
     AnswerResponse,
 )
-from services.interview_service import start_interview, submit_answer, quit_interview
+from services.interview_service import (
+    start_interview,
+    verify_resume_job_description,
+    submit_answer,
+    quit_interview,
+)
 from services.evaluation_service import generate_report
 
 router = APIRouter()
@@ -26,8 +32,29 @@ async def start_interview_endpoint(
             custom_role=request.custom_role,
             interview_type=request.interview_type,
             topic_id=request.topic_id,
+            job_description_id=request.job_description_id,
         )
         return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/verify")
+async def verify_resume_job_description_endpoint(
+    request: VerifyResumeJdRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Verify resume vs selected job description before starting interview."""
+    try:
+        result = await verify_resume_job_description(
+            user_id=current_user["user_id"],
+            role_id=request.role_id,
+            custom_role=request.custom_role,
+            job_description_id=request.job_description_id,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

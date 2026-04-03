@@ -6,12 +6,20 @@ import Link from "next/link";
 import Navbar from "@/components/Navbar";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import api from "@/lib/api";
-import { Profile, ReportHistoryItem, JobRole, Topic } from "@/types";
+import {
+  Profile,
+  ReportHistoryItem,
+  JobRole,
+  Topic,
+  JobDescription,
+  JobDescriptionAlignment,
+} from "@/types";
 import {
   FileText,
   AlertCircle,
   Clock,
   ChevronRight,
+  Loader2,
 } from "lucide-react";
 import { PageSkeleton } from "@/components/Skeleton";
 
@@ -21,22 +29,59 @@ export default function DashboardPage() {
   const [history, setHistory] = useState<ReportHistoryItem[]>([]);
   const [roles, setRoles] = useState<JobRole[]>([]);
   const [topics, setTopics] = useState<Topic[]>([]);
+  const [jobDescriptions, setJobDescriptions] = useState<JobDescription[]>([]);
   const [selectedRoleInput, setSelectedRoleInput] = useState("");
   const [interviewMode, setInterviewMode] = useState<"resume" | "topic">("resume");
   const [selectedTopicId, setSelectedTopicId] = useState("");
+  const [selectedJdId, setSelectedJdId] = useState("");
   const [loading, setLoading] = useState(true);
+  const [isStartingInterview, setIsStartingInterview] = useState(false);
+  const [isVerifyingMatch, setIsVerifyingMatch] = useState(false);
+  const [verificationResult, setVerificationResult] = useState<JobDescriptionAlignment | null>(null);
+
+  const getApiErrorMessage = (err: any, fallbackMessage: string) => {
+    const status = err?.response?.status;
+    const detail = err?.response?.data?.detail;
+
+    const rawDetail =
+      typeof detail === "string"
+        ? detail
+        : typeof detail?.message === "string"
+        ? detail.message
+        : detail
+        ? JSON.stringify(detail)
+        : "";
+
+    const normalized = rawDetail.toLowerCase();
+    const isAiBusy =
+      status === 503 ||
+      normalized.includes("unavailable") ||
+      normalized.includes("high demand") ||
+      normalized.includes("resource_exhausted");
+
+    if (isAiBusy) {
+      return "AI service is currently busy. Please try again in a few seconds.";
+    }
+
+    return rawDetail || fallbackMessage;
+  };
 
   useEffect(() => {
     fetchDashboardData();
   }, []);
 
+  useEffect(() => {
+    setVerificationResult(null);
+  }, [interviewMode, selectedRoleInput, selectedJdId]);
+
   const fetchDashboardData = async () => {
     try {
-      const [profileRes, historyRes, rolesRes, topicsRes] = await Promise.all([
+      const [profileRes, historyRes, rolesRes, topicsRes, jdRes] = await Promise.all([
         api.get("/profile"),
         api.get("/reports/history"),
         api.get("/admin/roles"),
         api.get("/admin/topics"),
+        api.get("/profile/job-descriptions"),
       ]);
       setProfile(profileRes.data);
       setHistory(historyRes.data.reports || []);
@@ -47,6 +92,12 @@ export default function DashboardPage() {
       setTopics(availableTopics);
       if (availableTopics.length > 0) {
         setSelectedTopicId(availableTopics[0].id);
+      }
+
+      const jdItems = jdRes.data.items || [];
+      setJobDescriptions(jdItems);
+      if (jdItems.length > 0) {
+        setSelectedJdId(jdItems[0].id);
       }
       
       // Auto-populate input if there are recommended roles
@@ -63,6 +114,55 @@ export default function DashboardPage() {
     }
   };
 
+  const buildResumeInterviewPayload = () => {
+    const payload: any = {};
+    if (selectedJdId) {
+      payload.job_description_id = selectedJdId;
+    }
+
+    const matchingAdminRole = roles.find(
+      (r) => r.title.toLowerCase() === selectedRoleInput.trim().toLowerCase()
+    );
+
+    if (matchingAdminRole) {
+      payload.role_id = matchingAdminRole.id;
+    } else {
+      payload.custom_role = selectedRoleInput.trim();
+    }
+
+    return payload;
+  };
+
+  const verifyResumeMatch = async () => {
+    if (interviewMode !== "resume") {
+      alert("JD verification is only available for Resume Interview mode.");
+      return;
+    }
+    if (!profile?.resume) {
+      alert("Please upload your resume first.");
+      return;
+    }
+    if (!selectedRoleInput.trim()) {
+      alert("Please select or type a job role before verification.");
+      return;
+    }
+    if (!selectedJdId) {
+      alert("Please select a job description to verify against your resume.");
+      return;
+    }
+
+    setIsVerifyingMatch(true);
+    try {
+      const payload = buildResumeInterviewPayload();
+      const { data } = await api.post("/interview/verify", payload);
+      setVerificationResult(data?.jd_alignment || null);
+    } catch (err: any) {
+      alert(getApiErrorMessage(err, "Failed to verify resume against job description"));
+    } finally {
+      setIsVerifyingMatch(false);
+    }
+  };
+
   const startInterview = async () => {
     if (interviewMode === "resume" && (!selectedRoleInput.trim() || !profile?.resume)) {
       alert("Please upload your resume first and select or type a job role.");
@@ -72,7 +172,8 @@ export default function DashboardPage() {
       alert("Please select a topic for topic-wise interview.");
       return;
     }
-    
+
+    setIsStartingInterview(true);
     try {
       const payload: any = {
         interview_type: interviewMode,
@@ -81,17 +182,14 @@ export default function DashboardPage() {
       if (interviewMode === "topic") {
         payload.topic_id = selectedTopicId;
       } else {
-        const matchingAdminRole = roles.find(
-          (r) => r.title.toLowerCase() === selectedRoleInput.trim().toLowerCase()
-        );
-        if (matchingAdminRole) {
-          payload.role_id = matchingAdminRole.id;
-        } else {
-          payload.custom_role = selectedRoleInput.trim();
-        }
+        Object.assign(payload, buildResumeInterviewPayload());
       }
 
       const { data } = await api.post("/interview/start", payload);
+      const alignmentToStore = verificationResult || data?.jd_alignment;
+      if (typeof window !== "undefined" && alignmentToStore) {
+        sessionStorage.setItem(`jd_alignment:${data.session_id}`, JSON.stringify(alignmentToStore));
+      }
       const timerEnabled = !!data?.timer?.enabled;
       const timerSeconds = Number(data?.timer?.seconds || 0);
       const timerQuery =
@@ -107,7 +205,9 @@ export default function DashboardPage() {
         }&total=${data.question.total_questions || 5}${timerQuery}`
       );
     } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to start interview");
+      alert(getApiErrorMessage(err, "Failed to start interview"));
+    } finally {
+      setIsStartingInterview(false);
     }
   };
 
@@ -216,7 +316,7 @@ export default function DashboardPage() {
                       Topic Interview
                     </button>
                   </div>
-                  <div className="flex flex-col sm:flex-row items-center gap-4">
+                  <div className="flex flex-col sm:flex-row items-start gap-4">
                     {interviewMode === "resume" ? (
                       <div className="relative flex-1 w-full">
                         <input
@@ -239,6 +339,25 @@ export default function DashboardPage() {
                             </option>
                           ))}
                         </datalist>
+                        <div className="mt-3">
+                          <select
+                            value={selectedJdId}
+                            onChange={(e) => setSelectedJdId(e.target.value)}
+                            className="w-full"
+                          >
+                            <option value="">No Job Description</option>
+                            {jobDescriptions.map((jd) => (
+                              <option key={jd.id} value={jd.id}>
+                                {jd.title}{jd.company ? ` - ${jd.company}` : ""}
+                              </option>
+                            ))}
+                          </select>
+                          {jobDescriptions.length === 0 && (
+                            <p className="text-xs text-muted mt-2">
+                              Add a job description in Settings to get resume-vs-JD alignment.
+                            </p>
+                          )}
+                        </div>
                       </div>
                     ) : (
                       <select
@@ -251,14 +370,89 @@ export default function DashboardPage() {
                         ))}
                       </select>
                     )}
-                    <button
-                      onClick={startInterview}
-                      className="w-full sm:w-auto px-6 py-2.5 bg-white text-black hover:bg-gray-200 rounded-lg font-semibold transition-colors flex items-center justify-center gap-2"
-                    >
-                      Start Practice
-                      <ChevronRight className="w-4 h-4" />
-                    </button>
+                    <div className="w-full sm:w-auto flex flex-col sm:flex-row gap-2">
+                      {interviewMode === "resume" && (
+                        <button
+                          onClick={verifyResumeMatch}
+                          disabled={isVerifyingMatch || isStartingInterview || !selectedJdId}
+                          className="w-full sm:w-auto px-5 py-2.5 border border-border hover:border-primary hover:bg-black/5 rounded-lg font-semibold transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                        >
+                          {isVerifyingMatch ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              Verifying...
+                            </>
+                          ) : (
+                            "Verify JD"
+                          )}
+                        </button>
+                      )}
+                      <button
+                        onClick={startInterview}
+                        disabled={isStartingInterview || isVerifyingMatch}
+                        className="w-full sm:w-auto px-6 py-2.5 bg-white text-black hover:bg-gray-100 hover:border-primary border border-transparent rounded-lg font-semibold transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {isStartingInterview ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Starting...
+                          </>
+                        ) : (
+                          <>
+                            Start Practice
+                            <ChevronRight className="w-4 h-4" />
+                          </>
+                        )}
+                      </button>
+                    </div>
                   </div>
+
+                  {interviewMode === "resume" && selectedJdId && !verificationResult && (
+                    <p className="text-xs text-muted mt-3">
+                      Verify first to preview how well your resume matches the selected job description.
+                    </p>
+                  )}
+
+                  {(isVerifyingMatch || isStartingInterview) && (
+                    <p className="text-xs text-muted mt-3">
+                      {isVerifyingMatch
+                        ? "Checking your resume against the selected JD..."
+                        : "Preparing your interview session. Please wait..."}
+                    </p>
+                  )}
+
+                  {verificationResult && interviewMode === "resume" && (
+                    <div className="mt-4 p-4 rounded-xl border border-border bg-background/50">
+                      <h3 className="text-sm font-semibold mb-1">Resume vs Job Description</h3>
+                      <p className="text-sm text-muted mb-3">{verificationResult.fit_summary}</p>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                        <div>
+                          <p className="font-semibold text-green-400 mb-1">Meeting</p>
+                          <ul className="space-y-1 text-muted">
+                            {verificationResult.meeting_expectations.slice(0, 4).map((item, idx) => (
+                              <li key={`meet-${idx}`}>- {item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                        <div>
+                          <p className="font-semibold text-yellow-400 mb-1">Missing</p>
+                          <ul className="space-y-1 text-muted">
+                            {verificationResult.missing_expectations.slice(0, 4).map((item, idx) => (
+                              <li key={`miss-${idx}`}>- {item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                        <div>
+                          <p className="font-semibold text-blue-400 mb-1">What Will Help</p>
+                          <ul className="space-y-1 text-muted">
+                            {verificationResult.improvement_suggestions.slice(0, 4).map((item, idx) => (
+                              <li key={`help-${idx}`}>- {item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
