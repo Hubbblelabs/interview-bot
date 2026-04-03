@@ -1,6 +1,7 @@
 from google import genai
 from config import get_settings
 from utils.skills import normalize_skill_list
+import asyncio
 import json
 import re
 from langchain_core.prompts import PromptTemplate
@@ -10,6 +11,20 @@ settings = get_settings()
 client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
 
+def _is_transient_gemini_error(error: Exception) -> bool:
+    message = str(error or "").lower()
+    transient_markers = [
+        "503",
+        "unavailable",
+        "resource_exhausted",
+        "high demand",
+        "deadline",
+        "timed out",
+        "timeout",
+    ]
+    return any(marker in message for marker in transient_markers)
+
+
 async def call_gemini(prompt: str, system_instruction: str = None) -> str:
     """Call Gemini API with a prompt and optional system instruction."""
     config = {}
@@ -17,12 +32,24 @@ async def call_gemini(prompt: str, system_instruction: str = None) -> str:
         config["system_instruction"] = system_instruction
     config["response_mime_type"] = "application/json"
 
-    response = client.models.generate_content(
-        model=settings.GEMINI_MODEL,
-        contents=prompt,
-        config=config if config else None,
-    )
-    return response.text
+    last_error = None
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        try:
+            response = client.models.generate_content(
+                model=settings.GEMINI_MODEL,
+                contents=prompt,
+                config=config if config else None,
+            )
+            return (response.text or "").strip()
+        except Exception as exc:
+            last_error = exc
+            if _is_transient_gemini_error(exc) and attempt < max_attempts - 1:
+                await asyncio.sleep(0.8 * (attempt + 1))
+                continue
+            break
+
+    raise RuntimeError(f"Gemini request failed: {last_error}")
 
 
 def _extract_json_object(text: str) -> str:
@@ -61,6 +88,44 @@ def _fallback_skill_scan(resume_text: str) -> list:
     return normalize_skill_list(found)
 
 
+def _is_loose_answer(answer: str) -> bool:
+    text = (answer or "").strip().lower()
+    if not text:
+        return True
+
+    word_count = len(text.split())
+    if word_count < 18:
+        return True
+
+    weak_markers = [
+        "i think",
+        "maybe",
+        "not sure",
+        "dont know",
+        "don't know",
+        "something like",
+        "etc",
+        "kind of",
+        "sort of",
+    ]
+    return any(marker in text for marker in weak_markers)
+
+
+def _collect_loose_qa(qa_pairs: list, limit: int = 4) -> list:
+    loose = []
+    for qa in reversed(qa_pairs or []):
+        question = (qa or {}).get("question", "")
+        answer = (qa or {}).get("answer", "")
+        if not question or not answer:
+            continue
+        if _is_loose_answer(answer):
+            loose.append({"question": question, "answer": answer})
+        if len(loose) >= limit:
+            break
+    loose.reverse()
+    return loose
+
+
 async def parse_resume_with_gemini(resume_text: str) -> dict:
     """Parse resume text and extract structured data using Gemini."""
     prompt = f"""Analyze the following resume and extract structured information.
@@ -89,8 +154,22 @@ Resume text:
 
 Return ONLY valid JSON, no markdown formatting."""
 
-    result = await call_gemini(prompt)
-    result = _extract_json_object(result)
+    try:
+        result = await call_gemini(prompt)
+        result = _extract_json_object(result)
+    except Exception:
+        return {
+            "name": None,
+            "email": None,
+            "phone": None,
+            "location": None,
+            "skills": _fallback_skill_scan(resume_text),
+            "recommended_roles": [],
+            "experience_summary": "Unable to parse with AI right now. Please retry.",
+            "experience": [],
+            "education": [],
+            "projects": [],
+        }
 
     try:
         parsed = json.loads(result)
@@ -120,6 +199,75 @@ Return ONLY valid JSON, no markdown formatting."""
             "experience": [],
             "education": [], 
             "projects": []
+        }
+
+
+async def analyze_resume_vs_job_description(
+    role_title: str,
+    resume_skills: list,
+    resume_summary: str,
+    jd_title: str,
+    jd_description: str,
+    jd_required_skills: list | None = None,
+) -> dict:
+    """Compare resume and job description to produce interview guidance."""
+    jd_required_skills = jd_required_skills or []
+    prompt = f"""You are an interview coach helping a student prepare for a job.
+
+Role title: {role_title}
+Job Description Title: {jd_title}
+Job Description Text:
+---
+{jd_description}
+---
+
+Job Description Required Skills (if provided): {json.dumps(jd_required_skills)}
+
+Student Resume Skills: {json.dumps(resume_skills)}
+Student Resume Summary:
+---
+{resume_summary}
+---
+
+Return ONLY valid JSON with this structure:
+{{
+  "meeting_expectations": ["..."],
+  "missing_expectations": ["..."],
+  "improvement_suggestions": ["..."],
+  "fit_summary": "short summary"
+}}
+
+Rules:
+1) Be practical and concise.
+2) Mention what already matches first.
+3) Missing expectations should be specific and skill/experience-oriented.
+4) Suggestions should be actionable and student-friendly.
+5) Avoid harsh wording.
+"""
+
+    try:
+        result = _extract_json_object(await call_gemini(prompt))
+        parsed = json.loads(result)
+        return {
+            "meeting_expectations": parsed.get("meeting_expectations", [])[:10],
+            "missing_expectations": parsed.get("missing_expectations", [])[:10],
+            "improvement_suggestions": parsed.get("improvement_suggestions", [])[:10],
+            "fit_summary": parsed.get("fit_summary", ""),
+        }
+    except Exception:
+        resume_set = {s.lower() for s in normalize_skill_list(resume_skills)}
+        required = normalize_skill_list(jd_required_skills)
+        missing = [s for s in required if s.lower() not in resume_set]
+        met = [s for s in required if s.lower() in resume_set]
+        return {
+            "meeting_expectations": met[:6],
+            "missing_expectations": missing[:6],
+            "improvement_suggestions": [
+                "Build 1-2 focused projects aligned with missing JD skills.",
+                "Use STAR-style examples for your strongest matching skills.",
+                "Revise resume bullets to highlight measurable impact.",
+            ],
+            "fit_summary": "You match some expectations and can improve fit by addressing the missing skills.",
         }
 
 
@@ -169,10 +317,10 @@ Return ONLY valid JSON, no markdown formatting."""
     )
     prompt = prompt_template.format(context=context, difficulty=difficulty)
 
-    result = _extract_json_object(await call_gemini(prompt))
     try:
+        result = _extract_json_object(await call_gemini(prompt))
         return json.loads(result)
-    except json.JSONDecodeError:
+    except Exception:
         return {
             "question": f"Tell me about your experience with {skills[0] if skills else 'software development'}.",
             "difficulty": difficulty,
@@ -235,8 +383,8 @@ Return ONLY JSON, no markdown."""
     )
     prompt = prompt_template.format(context=context, count=count)
 
-    result = (await call_gemini(prompt)).strip()
     try:
+        result = (await call_gemini(prompt)).strip()
         data = json.loads(result)
         if not isinstance(data, list):
             raise ValueError("Batch response is not a list")
@@ -302,21 +450,24 @@ async def generate_followup_question_batch_from_qa(
         "difficulty": difficulty,
         "count": count,
         "answered_qa": compact_qa,
+        "loose_qa": _collect_loose_qa(qa_pairs),
         "previous_questions": previous_questions,
     }
 
     prompt_template = PromptTemplate.from_template(
-        """You are generating technical interview follow-up questions.
+        """You are generating strict, concept-focused technical interview follow-up questions.
 
 Input JSON:
 {payload}
 
 Instructions:
 1. Generate exactly {count} follow-up questions using answered_qa context.
-2. Questions must continue naturally from candidate's previous answers.
+    2. Questions must continue naturally from candidate's previous answers.
 3. Do not repeat or paraphrase any question in previous_questions.
-4. Keep questions practical and role-relevant.
-5. Use difficulty {difficulty}.
+    4. Prioritize loose_qa first: if any answer is vague/short/uncertain, ask a direct follow-up that probes missing concept depth.
+    5. Focus on concept validation (why, how, trade-offs, failure modes), not memorized definitions.
+    6. Keep questions practical and role-relevant.
+    7. Use difficulty {difficulty}. Do not output easy/basic-level questions.
 
 Return ONLY valid JSON array with objects:
 - "question": string
@@ -331,8 +482,8 @@ No markdown, no extra text."""
         difficulty=difficulty,
     )
 
-    result = (await call_gemini(prompt)).strip()
     try:
+        result = (await call_gemini(prompt)).strip()
         data = json.loads(result)
         if not isinstance(data, list):
             raise ValueError("Follow-up batch response is not a list")
@@ -377,20 +528,25 @@ async def evaluate_interview(questions_and_answers: list, role_title: str) -> di
     for i, qa in enumerate(questions_and_answers, 1):
         qa_text += f"\nQ{i}: {qa['question']}\nA{i}: {qa['answer']}\n"
 
-        prompt_template = PromptTemplate.from_template(
-                """You are an interview coach for college students evaluating a candidate for the role: {role_title}
+    prompt_template = PromptTemplate.from_template(
+                """You are a strict technical interviewer evaluating a candidate for the role: {role_title}.
 
 Here are the interview questions and the candidate's answers:
 {qa_text}
 
-Evaluation style requirements:
-1. Evaluate based on concept understanding (not perfection), effort, and clarity.
-2. If an answer is incomplete:
-     - acknowledge what is correct,
-     - gently point out what is missing,
-     - give a hint instead of giving the full direct answer.
-3. Avoid harsh, discouraging, or overly critical language.
-4. Keep feedback constructive, encouraging, and learning-oriented.
+Scoring policy (concept-first, strict):
+1. Score primarily on conceptual correctness, depth, and reasoning quality.
+2. Do NOT reward answer length, confidence, or communication style when concepts are wrong.
+3. Penalize vague, hand-wavy, or uncertain answers.
+4. Penalize technically incorrect claims even if explanation sounds fluent.
+5. Reward precise mechanisms, trade-offs, edge cases, and debugging logic.
+
+Score rubric per answer:
+- 90-100: conceptually correct, deep, and accurate with strong reasoning
+- 70-89: mostly correct with minor conceptual gaps
+- 50-69: partially correct but misses key mechanisms
+- 30-49: shallow/vague with major conceptual gaps
+- 0-29: incorrect or off-topic
 
 Return a JSON object with:
 - "overall_score": integer from 0-100
@@ -398,19 +554,19 @@ Return a JSON object with:
     - "question": the question text
     - "answer": the answer text
     - "score": integer 0-100
-    - "feedback": specific but supportive coaching feedback for this answer
+    - "feedback": concise concept-focused feedback for this answer
 - "strengths": list of 3-5 strength areas
-- "weaknesses": list of 3-5 areas for improvement (worded supportively)
-- "recommendations": list of 3-5 actionable learning recommendations
+- "weaknesses": list of 3-5 concept gaps
+- "recommendations": list of 3-5 actionable concept-improvement recommendations
 
 Return ONLY valid JSON, no markdown formatting."""
         )
     prompt = prompt_template.format(role_title=role_title, qa_text=qa_text)
 
-    result = _extract_json_object(await call_gemini(prompt))
     try:
+        result = _extract_json_object(await call_gemini(prompt))
         return json.loads(result)
-    except json.JSONDecodeError:
+    except Exception:
         return {
             "overall_score": 50,
             "detailed_scores": [],

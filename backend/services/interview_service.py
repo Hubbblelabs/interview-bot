@@ -2,11 +2,12 @@ import json
 import asyncio
 from bson import ObjectId
 from database import get_db, get_redis
-from models.collections import SESSIONS, JOB_ROLES, SKILLS, QUESTIONS, TOPICS, TOPIC_QUESTIONS, ROLE_REQUIREMENTS
+from models.collections import SESSIONS, JOB_ROLES, SKILLS, QUESTIONS, TOPICS, TOPIC_QUESTIONS, ROLE_REQUIREMENTS, RESUMES
 from utils.helpers import generate_id, utc_now, str_objectid
 from utils.skills import normalize_skill_list, find_matching_skills, find_missing_skills, build_interview_focus_skills
 from services.interview_graph import run_interview_graph
-from utils.gemini import generate_interview_question_batch
+from utils.gemini import generate_interview_question_batch, analyze_resume_vs_job_description
+from services.job_description_service import get_job_description_for_user
 
 MAX_QUESTIONS = 20
 SESSION_TTL = 7200  # 2 hours
@@ -40,6 +41,15 @@ def _safe_int(value, default: int = 0) -> int:
         return int(value)
     except Exception:
         return default
+
+
+def _normalize_bank_difficulty(value: str) -> str:
+    difficulty = (value or "medium").strip().lower()
+    if difficulty not in {"easy", "medium", "hard"}:
+        return "medium"
+    if difficulty == "easy":
+        return "medium"
+    return difficulty
 
 
 def _avg_recent_answer_words(qa_pairs: list, window: int = 3) -> int:
@@ -80,6 +90,68 @@ def _plan_followup_mix(target: int, qa_pairs: list, has_bank_source: bool) -> tu
     return ai_target, bank_target
 
 
+async def _resolve_role_title(db, role_id: str | None, custom_role: str | None) -> str:
+    if custom_role and custom_role.strip():
+        return custom_role.strip()
+
+    if role_id:
+        try:
+            role = await db[JOB_ROLES].find_one({"_id": ObjectId(role_id)})
+            if role:
+                return role["title"]
+        except Exception:
+            # If it's not a valid ObjectId, treat it as a direct generic title.
+            return role_id
+
+    return "Software Developer"
+
+
+async def verify_resume_job_description(
+    user_id: str,
+    role_id: str = None,
+    custom_role: str = None,
+    job_description_id: str = None,
+) -> dict:
+    """Run resume-vs-job-description verification without starting an interview."""
+    if not job_description_id:
+        raise ValueError("job_description_id is required for verification")
+
+    db = get_db()
+
+    resume_doc = await db[RESUMES].find_one({"user_id": user_id})
+    if not resume_doc:
+        raise ValueError("Please upload your resume before running verification")
+
+    skills_doc = await db[SKILLS].find_one({"user_id": user_id})
+    resume_skills = normalize_skill_list(skills_doc.get("skills", [])) if skills_doc else []
+
+    parsed_data = (resume_doc or {}).get("parsed_data", {}) or {}
+    summary_parts = [
+        parsed_data.get("experience_summary") or "",
+        " ".join(parsed_data.get("recommended_roles", []) or []),
+    ]
+    resume_summary = "\n".join([part for part in summary_parts if part]).strip() or "No summary available"
+
+    role_title = await _resolve_role_title(db, role_id=role_id, custom_role=custom_role)
+    selected_jd = await get_job_description_for_user(user_id, job_description_id)
+
+    jd_alignment = await analyze_resume_vs_job_description(
+        role_title=role_title,
+        resume_skills=resume_skills if resume_skills else ["general"],
+        resume_summary=resume_summary,
+        jd_title=selected_jd.get("title", ""),
+        jd_description=selected_jd.get("description", ""),
+        jd_required_skills=selected_jd.get("required_skills", []),
+    )
+
+    return {
+        "role_title": role_title,
+        "job_description": selected_jd,
+        "jd_alignment": jd_alignment,
+        "message": "Verification complete",
+    }
+
+
 async def _get_generated_question_texts(redis, session_id: str) -> list[str]:
     qids = await redis.lrange(f"session:{session_id}:questions", 0, -1)
     questions = []
@@ -113,6 +185,7 @@ async def _generate_question_batch(
             count=target,
             start_question_number=1,
             previous_questions=previous_questions,
+            foundation_limit=0,
         )
         if seeded:
             last = seeded[-1].get("difficulty", current_difficulty)
@@ -178,41 +251,65 @@ async def _fetch_question_bank_batch(
     excluded_questions: list[str],
     limit: int,
 ) -> list[dict]:
-    if not role_id or limit <= 0:
+    if limit <= 0:
         return []
 
-    role_candidates = [role_id]
-    try:
-        oid = ObjectId(role_id)
-        role_candidates.append(str(oid))
-        role_candidates.append(oid)
-    except Exception:
-        pass
-
-    query = {"role_id": {"$in": role_candidates}}
+    query = {"question": {"$exists": True, "$ne": ""}}
+    if role_id:
+        role_candidates = [role_id]
+        try:
+            oid = ObjectId(role_id)
+            role_candidates.append(str(oid))
+            role_candidates.append(oid)
+        except Exception:
+            pass
+        query["role_id"] = {"$in": role_candidates}
 
     excluded = {q.strip().lower() for q in excluded_questions if q}
-    cursor = db[QUESTIONS].find(query).limit(200)
     selected: list[dict] = []
 
-    async for q in cursor:
-        text = (q.get("question") or "").strip()
-        if not text:
-            continue
-        if text.lower() in excluded:
-            continue
-        selected.append(
-            {
-                "question": text,
-                "difficulty": (q.get("difficulty") or "medium").lower(),
-                "category": q.get("category") or "question-bank",
-            }
-        )
-        excluded.add(text.lower())
+    for sample_size in (max(limit * 12, 80), max(limit * 24, 160)):
+        pipeline = [
+            {"$match": query},
+            {"$sample": {"size": sample_size}},
+        ]
+
+        async for q in db[QUESTIONS].aggregate(pipeline):
+            text = (q.get("question") or "").strip()
+            if not text:
+                continue
+            if text.lower() in excluded:
+                continue
+            selected.append(
+                {
+                    "question": text,
+                    "difficulty": _normalize_bank_difficulty(q.get("difficulty") or "medium"),
+                    "category": q.get("category") or "question-bank",
+                }
+            )
+            excluded.add(text.lower())
+            if len(selected) >= limit:
+                break
+
         if len(selected) >= limit:
             break
 
+    # If role-scoped pool is too small, widen to global random pool.
+    if len(selected) < limit and role_id:
+        fallback = await _fetch_question_bank_batch(
+            db=db,
+            role_id=None,
+            excluded_questions=list(excluded),
+            limit=limit - len(selected),
+        )
+        selected.extend(fallback)
+
     return selected
+
+
+def _strict_followup_difficulty(answered_count: int) -> str:
+    # After first DB set (Q1-5), follow-ups should feel like real interview pressure.
+    return "hard" if answered_count >= 10 else "medium"
 
 
 async def _generate_mixed_followup_batch(
@@ -235,15 +332,17 @@ async def _generate_mixed_followup_batch(
 
     previous_questions = await _get_generated_question_texts(redis, session_id)
     qa_pairs = await get_session_qa(session_id)
+    answered_count = len(qa_pairs)
     role_title = session.get("role_title", "Software Developer")
     skills = _safe_json_list(session.get("skills", "[]"))
-    current_difficulty = session.get("current_difficulty", "medium")
+    current_difficulty = _strict_followup_difficulty(answered_count)
 
-    ai_target, bank_target = _plan_followup_mix(
-        target=target,
-        qa_pairs=qa_pairs,
-        has_bank_source=bool(session.get("role_id")),
-    )
+    if target >= 5:
+        ai_target = 3
+        bank_target = 2
+    else:
+        ai_target = min(3, target)
+        bank_target = min(2, max(0, target - ai_target))
 
     from utils.gemini import generate_followup_question_batch_from_qa
 
@@ -487,6 +586,7 @@ async def start_interview(
     custom_role: str = None,
     interview_type: str = "resume",
     topic_id: str = None,
+    job_description_id: str = None,
 ) -> dict:
     """Start a new interview session."""
     interview_type = (interview_type or "resume").strip().lower()
@@ -504,18 +604,7 @@ async def start_interview(
     user_skills = normalize_skill_list(user_skills)
 
     # Get role
-    role_title = "Software Developer"
-    if custom_role:
-        role_title = custom_role
-    elif role_id:
-        from bson import ObjectId
-        try:
-            role = await db[JOB_ROLES].find_one({"_id": ObjectId(role_id)})
-            if role:
-                role_title = role["title"]
-        except Exception:
-            # If it's not a valid ObjectId, assume it's a raw generic title passed from frontend
-            role_title = role_id
+    role_title = await _resolve_role_title(db, role_id=role_id, custom_role=custom_role)
 
     # Compare role requirements with user skills when admin role requirements exist.
     required_skills = []
@@ -527,25 +616,48 @@ async def start_interview(
     matched_role_skills = find_matching_skills(user_skills, required_skills)
     missing_role_skills = find_missing_skills(user_skills, required_skills)
 
+    selected_jd = None
+    if job_description_id:
+        selected_jd = await get_job_description_for_user(user_id, job_description_id)
+
     # Prioritize matched required skills and compress them into cluster-aware focus areas.
     base_skills_for_interview = matched_role_skills if matched_role_skills else user_skills
     skills_for_interview = build_interview_focus_skills(base_skills_for_interview)
     if not skills_for_interview:
         skills_for_interview = ["general"]
 
-    # Workflow: generate first batch upfront, store in Redis, serve Q1.
-    initial_batch, last_difficulty = await _generate_question_batch(
-        role_title=role_title,
-        skills=skills_for_interview,
-        previous_questions=[],
-        generated_count=0,
-        max_questions=MAX_QUESTIONS,
-        current_difficulty="medium",
-        local_summary=None,
-        batch_size=BATCH_SIZE,
+    # First set must come from random DB questions when possible.
+    initial_bank = await _fetch_question_bank_batch(
+        db=db,
+        role_id=role_id,
+        excluded_questions=[],
+        limit=BATCH_SIZE,
     )
+
+    initial_batch = list(initial_bank)
+    initial_ai_items: list[dict] = []
+    if len(initial_batch) < BATCH_SIZE:
+        ai_count = BATCH_SIZE - len(initial_batch)
+        initial_ai_items, _ = await _generate_question_batch(
+            role_title=role_title,
+            skills=skills_for_interview,
+            previous_questions=[q.get("question", "") for q in initial_batch],
+            generated_count=0,
+            max_questions=MAX_QUESTIONS,
+            current_difficulty="medium",
+            local_summary=None,
+            batch_size=ai_count,
+        )
+        initial_batch.extend(initial_ai_items)
+
+    last_difficulty = initial_batch[-1].get("difficulty", "medium") if initial_batch else "medium"
     if not initial_batch:
         raise ValueError("Failed to generate initial interview questions")
+
+    initial_gemini_calls = 1 if initial_ai_items else 0
+    initial_gemini_questions = len(initial_ai_items)
+    initial_bank_questions = len(initial_bank)
+    initial_bank_shortfall = max(0, BATCH_SIZE - len(initial_bank))
 
     session_id = generate_id()
     _LOCAL_SUMMARIES[session_id] = ""
@@ -556,15 +668,17 @@ async def start_interview(
         "user_id": user_id,
         "role_id": role_id,
         "role_title": role_title,
+        "job_description_id": selected_jd.get("id") if selected_jd else None,
+        "job_description_title": selected_jd.get("title") if selected_jd else None,
         "status": "in_progress",
         "interview_type": "resume",
         "question_count": 1,
         "max_questions": MAX_QUESTIONS,
         "current_difficulty": initial_batch[0].get("difficulty", "medium"),
-        "metrics_gemini_calls": 1,
-        "metrics_gemini_questions": len(initial_batch),
-        "metrics_bank_questions": 0,
-        "metrics_bank_shortfall": 0,
+        "metrics_gemini_calls": initial_gemini_calls,
+        "metrics_gemini_questions": initial_gemini_questions,
+        "metrics_bank_questions": initial_bank_questions,
+        "metrics_bank_shortfall": initial_bank_shortfall,
         "metrics_generation_batches": 1,
         "started_at": utc_now(),
     }
@@ -588,10 +702,10 @@ async def start_interview(
         "current_difficulty": last_difficulty,
         "interview_type": "resume",
         "status": "in_progress",
-        "metrics_gemini_calls": 1,
-        "metrics_gemini_questions": len(initial_batch),
-        "metrics_bank_questions": 0,
-        "metrics_bank_shortfall": 0,
+        "metrics_gemini_calls": initial_gemini_calls,
+        "metrics_gemini_questions": initial_gemini_questions,
+        "metrics_bank_questions": initial_bank_questions,
+        "metrics_bank_shortfall": initial_bank_shortfall,
         "metrics_generation_batches": 1,
     }
     await redis.hset(f"session:{session_id}", mapping=session_state)
@@ -628,6 +742,8 @@ async def start_interview(
             "seconds": None,
         },
         "message": "Interview started. Good luck!",
+        "job_description": selected_jd,
+        "jd_alignment": None,
     }
 
 
