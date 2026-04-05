@@ -2,12 +2,13 @@ import json
 import asyncio
 from bson import ObjectId
 from database import get_db, get_redis
-from models.collections import SESSIONS, JOB_ROLES, SKILLS, QUESTIONS, TOPICS, TOPIC_QUESTIONS, ROLE_REQUIREMENTS, RESUMES
+from models.collections import SESSIONS, USERS, JOB_ROLES, SKILLS, QUESTIONS, TOPICS, TOPIC_QUESTIONS, ROLE_REQUIREMENTS, RESUMES
 from utils.helpers import generate_id, utc_now, str_objectid
 from utils.skills import normalize_skill_list, find_matching_skills, find_missing_skills, build_interview_focus_skills
 from services.interview_graph import run_interview_graph
 from utils.gemini import generate_interview_question_batch, analyze_resume_vs_job_description
 from services.job_description_service import get_job_description_for_user
+from services.tts_service import prefetch_wav
 
 MAX_QUESTIONS = 20
 SESSION_TTL = 7200  # 2 hours
@@ -41,6 +42,31 @@ def _safe_int(value, default: int = 0) -> int:
         return int(value)
     except Exception:
         return default
+
+
+def _normalize_voice_gender(value: str | None) -> str:
+    return "male" if (value or "").strip().lower() == "male" else "female"
+
+
+def _consume_prefetch_task_result(task: asyncio.Task) -> None:
+    try:
+        task.result()
+    except Exception:
+        # Prefetch is optional; ignore failures to avoid noisy task warnings.
+        pass
+
+
+def _schedule_question_audio_prefetch(questions: list[str], voice_gender: str) -> None:
+    for q in questions:
+        text = (q or "").strip()
+        if not text:
+            continue
+        try:
+            task = asyncio.create_task(prefetch_wav(text, voice_gender))
+            task.add_done_callback(_consume_prefetch_task_result)
+        except Exception:
+            # Best-effort optimization only.
+            pass
 
 
 def _normalize_bank_difficulty(value: str) -> str:
@@ -418,6 +444,13 @@ async def _start_topic_interview(user_id: str, topic_id: str) -> dict:
     session_id = generate_id()
     _LOCAL_SUMMARIES[session_id] = ""
 
+    user_doc = None
+    try:
+        user_doc = await db[USERS].find_one({"_id": ObjectId(user_id)}, {"speech_settings": 1})
+    except Exception:
+        user_doc = await db[USERS].find_one({"user_id": user_id}, {"speech_settings": 1})
+    speech_voice_gender = _normalize_voice_gender(((user_doc or {}).get("speech_settings") or {}).get("voice_gender"))
+
     session_doc = {
         "session_id": session_id,
         "user_id": user_id,
@@ -434,6 +467,7 @@ async def _start_topic_interview(user_id: str, topic_id: str) -> dict:
         "metrics_bank_questions": 0,
         "metrics_bank_shortfall": 0,
         "metrics_generation_batches": 0,
+        "speech_voice_gender": speech_voice_gender,
         "timer_enabled": timer_enabled,
         "timer_seconds": timer_seconds,
         "started_at": utc_now(),
@@ -459,6 +493,7 @@ async def _start_topic_interview(user_id: str, topic_id: str) -> dict:
         "timer_enabled": str(timer_enabled),
         "timer_seconds": str(timer_seconds or ""),
         "status": "in_progress",
+        "speech_voice_gender": speech_voice_gender,
         "metrics_gemini_calls": 0,
         "metrics_gemini_questions": 0,
         "metrics_bank_questions": 0,
@@ -492,6 +527,14 @@ async def _start_topic_interview(user_id: str, topic_id: str) -> dict:
         await redis.expire(f"session:{session_id}:pending_questions", SESSION_TTL)
 
     first_q_data = await redis.hgetall(f"session:{session_id}:q:{first_id}")
+    _schedule_question_audio_prefetch(
+        [
+            first_q_data.get("question", ""),
+            *[q.get("question", "") for q in selected[1:3]],
+        ],
+        speech_voice_gender,
+    )
+
     return {
         "session_id": session_id,
         "interview_type": "topic",
@@ -598,6 +641,13 @@ async def start_interview(
     db = get_db()
     redis = get_redis()
 
+    user_doc = None
+    try:
+        user_doc = await db[USERS].find_one({"_id": ObjectId(user_id)}, {"speech_settings": 1})
+    except Exception:
+        user_doc = await db[USERS].find_one({"user_id": user_id}, {"speech_settings": 1})
+    speech_voice_gender = _normalize_voice_gender(((user_doc or {}).get("speech_settings") or {}).get("voice_gender"))
+
     # Get user skills
     skills_doc = await db[SKILLS].find_one({"user_id": user_id})
     user_skills = skills_doc.get("skills", ["general"]) if skills_doc else ["general"]
@@ -680,6 +730,7 @@ async def start_interview(
         "metrics_bank_questions": initial_bank_questions,
         "metrics_bank_shortfall": initial_bank_shortfall,
         "metrics_generation_batches": 1,
+        "speech_voice_gender": speech_voice_gender,
         "started_at": utc_now(),
     }
     await db[SESSIONS].insert_one(session_doc)
@@ -702,6 +753,7 @@ async def start_interview(
         "current_difficulty": last_difficulty,
         "interview_type": "resume",
         "status": "in_progress",
+        "speech_voice_gender": speech_voice_gender,
         "metrics_gemini_calls": initial_gemini_calls,
         "metrics_gemini_questions": initial_gemini_questions,
         "metrics_bank_questions": initial_bank_questions,
@@ -720,6 +772,13 @@ async def start_interview(
         await redis.expire(f"session:{session_id}:pending_questions", SESSION_TTL)
 
     first_q_data = await redis.hgetall(f"session:{session_id}:q:{first_id}")
+    _schedule_question_audio_prefetch(
+        [
+            first_q_data.get("question", ""),
+            *[item.get("question", "") for item in initial_batch[1:4]],
+        ],
+        speech_voice_gender,
+    )
 
     return {
         "session_id": session_id,
@@ -885,6 +944,15 @@ async def submit_answer(session_id: str, question_id: str, answer: str) -> dict:
         raise ValueError("Unable to fetch or generate next question")
 
     q_data = await redis.hgetall(f"session:{session_id}:q:{next_question_id}")
+    speech_voice_gender = _normalize_voice_gender(session.get("speech_voice_gender"))
+
+    # Prefetch the spoken audio for this question and one-ahead question.
+    prefetch_texts = [q_data.get("question", "")]
+    peek_next_id = await redis.lindex(f"session:{session_id}:pending_questions", 0)
+    if peek_next_id:
+        peek_q = await redis.hgetall(f"session:{session_id}:q:{peek_next_id}")
+        prefetch_texts.append(peek_q.get("question", ""))
+    _schedule_question_audio_prefetch(prefetch_texts, speech_voice_gender)
     next_difficulty = q_data.get("difficulty", session.get("current_difficulty", "medium"))
     new_count = question_count + 1
     new_served_count = served_count + 1

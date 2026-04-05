@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -8,6 +9,8 @@ import os
 
 from config import get_settings
 from database import connect_db, close_db
+from services.tts_service import warmup_xtts_model
+from services.stt_service import warmup_whisper_model
 
 from routers import auth, resume, profile, interview, reports, admin, speech
 
@@ -19,6 +22,17 @@ async def lifespan(app: FastAPI):
     # Startup
     await connect_db()
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+    try:
+        await asyncio.wait_for(warmup_xtts_model(), timeout=45)
+        print("XTTS warmup: ready")
+    except Exception as exc:
+        print(f"XTTS warmup skipped: {exc}")
+
+    try:
+        await asyncio.wait_for(warmup_whisper_model(), timeout=45)
+        print("Whisper warmup: ready")
+    except Exception as exc:
+        print(f"Whisper warmup skipped: {exc}")
     print(f"🚀 Interview Bot API running in {settings.APP_ENV} mode")
     yield
     # Shutdown
