@@ -57,7 +57,7 @@ export default function ReportPage() {
     return (
       <ProtectedRoute requiredRole="student">
         <Navbar />
-        <main className="pt-20 pb-12 px-4 max-w-4xl mx-auto">
+        <main className="app-page-shell max-w-4xl">
           <div className="text-center text-muted mt-20">Report not found.</div>
         </main>
       </ProtectedRoute>
@@ -67,13 +67,13 @@ export default function ReportPage() {
   return (
     <ProtectedRoute requiredRole="student">
       <Navbar />
-      <main className="pt-20 pb-12 px-4 max-w-4xl mx-auto">
+      <main className="app-page-shell max-w-4xl">
         <div className="animate-fade-in">
-          <div className="text-center mb-8">
+          <div className="text-center mb-8 app-section-card bg-gradient-to-b from-white to-slate-50/80">
             <p className="text-sm text-muted mb-2">
               {report.role_title || "Interview"} • {new Date(report.completed_at).toLocaleDateString()}
             </p>
-            <div className={`inline-flex items-center justify-center w-28 h-28 rounded-full border-4 ${scoreBg(report.overall_score)} mb-3`}>
+            <div className={`app-score-ring ${scoreBg(report.overall_score)}`}>
               <span className={`text-4xl font-bold ${scoreColor(report.overall_score)}`}>
                 {report.overall_score}
               </span>
@@ -83,28 +83,28 @@ export default function ReportPage() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
-            <div className="p-5 rounded-xl bg-card border border-border">
+            <div className="app-section-card">
               <div className="flex items-center gap-2 mb-3">
                 <TrendingUp className="w-5 h-5 text-green-400" />
                 <h3 className="font-semibold text-green-400">Strengths</h3>
               </div>
               <ul className="space-y-2">
                 {report.strengths.map((s, i) => (
-                  <li key={i} className="text-sm text-muted flex items-start gap-2">
+                  <li key={i} className="text-sm text-muted leading-relaxed flex items-start gap-2">
                     <span className="text-green-400 mt-0.5">•</span>
                     {s}
                   </li>
                 ))}
               </ul>
             </div>
-            <div className="p-5 rounded-xl bg-card border border-border">
+            <div className="app-section-card">
               <div className="flex items-center gap-2 mb-3">
                 <TrendingDown className="w-5 h-5 text-red-400" />
                 <h3 className="font-semibold text-red-400">Areas to Improve</h3>
               </div>
               <ul className="space-y-2">
                 {report.weaknesses.map((w, i) => (
-                  <li key={i} className="text-sm text-muted flex items-start gap-2">
+                  <li key={i} className="text-sm text-muted leading-relaxed flex items-start gap-2">
                     <span className="text-red-400 mt-0.5">•</span>
                     {w}
                   </li>
@@ -114,14 +114,14 @@ export default function ReportPage() {
           </div>
 
           {report.recommendations?.length > 0 && (
-            <div className="p-5 rounded-xl bg-card border border-border mb-8">
+            <div className="app-section-card mb-8">
               <div className="flex items-center gap-2 mb-3">
                 <Lightbulb className="w-5 h-5 text-yellow-400" />
                 <h3 className="font-semibold">Recommendations</h3>
               </div>
               <ul className="space-y-2">
                 {report.recommendations.map((r, i) => (
-                  <li key={i} className="text-sm text-muted flex items-start gap-2">
+                  <li key={i} className="text-sm text-muted leading-relaxed flex items-start gap-2">
                     <span className="text-yellow-400 mt-0.5">{i + 1}.</span>
                     {r}
                   </li>
@@ -130,26 +130,24 @@ export default function ReportPage() {
             </div>
           )}
 
-          <div className="p-5 rounded-xl bg-card border border-border">
+          <div className="app-section-card">
             <div className="flex items-center gap-2 mb-4">
               <BarChart3 className="w-5 h-5 text-muted" />
               <h3 className="font-semibold">Question Breakdown</h3>
             </div>
             <div className="space-y-3">
               {report.detailed_scores.map((qs, i) => (
-                <div
-                  key={i}
-                  className="rounded-lg bg-background border border-border overflow-hidden"
-                >
+                <div key={i} className="app-qa-item">
                   <button
-                    className="w-full p-4 text-left flex items-center justify-between"
+                    className="app-qa-toggle"
                     onClick={() => setExpandedQ(expandedQ === i ? null : i)}
                   >
-                    <div className="flex-1 pr-4">
-                      <p className="text-sm font-medium truncate">{qs.question}</p>
+                    <div className="flex-1 min-w-0 pr-3">
+                      <p className="text-xs text-muted mb-1">Question {i + 1}</p>
+                      <p className="app-qa-question">{qs.question}</p>
                     </div>
-                    <div className="flex items-center gap-3 shrink-0">
-                      <span className={`font-bold ${scoreColor(qs.score)}`}>
+                    <div className="flex items-center gap-3 shrink-0 pt-1">
+                      <span className={`font-bold text-base ${scoreColor(qs.score)}`}>
                         {qs.score}%
                       </span>
                       {expandedQ === i ? (
@@ -160,14 +158,14 @@ export default function ReportPage() {
                     </div>
                   </button>
                   {expandedQ === i && (
-                    <div className="px-4 pb-4 border-t border-border pt-3 animate-fade-in">
+                    <div className="app-qa-body">
                       <div className="mb-3">
                         <p className="text-xs text-muted mb-1">Your Answer</p>
-                        <p className="text-sm bg-white/5 p-3 rounded-lg">{qs.answer}</p>
+                        <p className="text-sm bg-white/5 p-3 rounded-lg leading-relaxed break-words whitespace-pre-wrap">{qs.answer}</p>
                       </div>
                       <div>
                         <p className="text-xs text-muted mb-1">Feedback</p>
-                        <p className="text-sm text-muted">{qs.feedback}</p>
+                        <p className="text-sm text-muted leading-relaxed break-words whitespace-pre-wrap">{qs.feedback}</p>
                       </div>
                     </div>
                   )}

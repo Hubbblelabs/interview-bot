@@ -7,6 +7,13 @@ import Navbar from "@/components/Navbar";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import api from "@/lib/api";
 import {
+  warmupSpeechVoices,
+  unlockSpeechPlayback,
+  prefetchSpeech,
+  prepareSpeech,
+  SpeechVoiceGender,
+} from "@/lib/speech";
+import {
   Profile,
   ReportHistoryItem,
   JobRole,
@@ -68,6 +75,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     fetchDashboardData();
+    void warmupSpeechVoices();
   }, []);
 
   useEffect(() => {
@@ -174,6 +182,8 @@ export default function DashboardPage() {
     }
 
     setIsStartingInterview(true);
+    // Called from button click gesture to improve media autoplay reliability.
+    await unlockSpeechPlayback();
     try {
       const payload: any = {
         interview_type: interviewMode,
@@ -186,6 +196,33 @@ export default function DashboardPage() {
       }
 
       const { data } = await api.post("/interview/start", payload);
+
+      const preferredVoice =
+        ((typeof window !== "undefined"
+          ? (localStorage.getItem("speech_voice_gender") as SpeechVoiceGender | null)
+          : null) ||
+          (profile?.speech_settings?.voice_gender as SpeechVoiceGender | undefined) ||
+          "female") as SpeechVoiceGender;
+
+      prefetchSpeech(data?.question?.question || "", {
+        voiceGender: preferredVoice,
+        style: "assistant",
+      });
+
+      try {
+        await Promise.race([
+          prepareSpeech(data?.question?.question || "", {
+            voiceGender: preferredVoice,
+            style: "assistant",
+          }),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("xtts prefetch timeout")), 25000)
+          ),
+        ]);
+      } catch {
+        // Continue to interview page; runtime speech fallback still applies.
+      }
+
       const alignmentToStore = verificationResult || data?.jd_alignment;
       if (typeof window !== "undefined" && alignmentToStore) {
         sessionStorage.setItem(`jd_alignment:${data.session_id}`, JSON.stringify(alignmentToStore));
@@ -318,28 +355,43 @@ export default function DashboardPage() {
                   </div>
                   <div className="flex flex-col sm:flex-row items-start gap-4">
                     {interviewMode === "resume" ? (
-                      <div className="relative flex-1 w-full">
-                        <input
-                          type="text"
-                          list="roles-suggestions"
-                          value={selectedRoleInput}
-                          onChange={(e) => setSelectedRoleInput(e.target.value)}
-                          placeholder="e.g. Frontend Developer"
-                          className="w-full px-4 py-2.5 rounded-lg bg-background border border-border focus:outline-none focus:border-white transition-colors"
-                        />
-                        <datalist id="roles-suggestions">
-                          {profile?.resume?.parsed_data?.recommended_roles?.map((role, i) => (
-                            <option key={`rec-${i}`} value={role}>
-                              Recommended by AI
-                            </option>
-                          ))}
-                          {roles.map((r) => (
-                            <option key={`admin-${r.id}`} value={r.title}>
-                              Standard Role
-                            </option>
-                          ))}
-                        </datalist>
-                        <div className="mt-3">
+                      <div className="relative flex-1 w-full space-y-3">
+                        <div className="rounded-lg border border-border bg-background/60 p-3">
+                          <p className="text-xs uppercase tracking-wide text-muted font-semibold mb-1">
+                            Step 1: Choose Interview Role (Required)
+                          </p>
+                          <p className="text-xs text-muted mb-2">
+                            Role is the position you are preparing for. It decides interview question direction.
+                          </p>
+                          <input
+                            type="text"
+                            list="roles-suggestions"
+                            value={selectedRoleInput}
+                            onChange={(e) => setSelectedRoleInput(e.target.value)}
+                            placeholder="e.g. Frontend Developer"
+                            className="w-full px-4 py-2.5 rounded-lg bg-background border border-border focus:outline-none focus:border-white transition-colors"
+                          />
+                          <datalist id="roles-suggestions">
+                            {profile?.resume?.parsed_data?.recommended_roles?.map((role, i) => (
+                              <option key={`rec-${i}`} value={role}>
+                                Recommended by AI
+                              </option>
+                            ))}
+                            {roles.map((r) => (
+                              <option key={`admin-${r.id}`} value={r.title}>
+                                Standard Role
+                              </option>
+                            ))}
+                          </datalist>
+                        </div>
+
+                        <div className="rounded-lg border border-border bg-background/60 p-3">
+                          <p className="text-xs uppercase tracking-wide text-muted font-semibold mb-1">
+                            Step 2: Choose Job Description - JD (Optional)
+                          </p>
+                          <p className="text-xs text-muted mb-2">
+                            JD is a real job posting used for resume-match verification only. It does not replace Role selection.
+                          </p>
                           <select
                             value={selectedJdId}
                             onChange={(e) => setSelectedJdId(e.target.value)}
@@ -354,21 +406,33 @@ export default function DashboardPage() {
                           </select>
                           {jobDescriptions.length === 0 && (
                             <p className="text-xs text-muted mt-2">
-                              Add a job description in Settings to get resume-vs-JD alignment.
+                              Add a job description in Settings to enable resume-vs-JD verification.
                             </p>
                           )}
+
+                          <p className="text-[11px] text-muted mt-2">
+                            Summary: Role = question focus. JD = resume gap check.
+                          </p>
                         </div>
                       </div>
                     ) : (
-                      <select
-                        value={selectedTopicId}
-                        onChange={(e) => setSelectedTopicId(e.target.value)}
-                        className="flex-1 w-full"
-                      >
-                        {topics.map((t) => (
-                          <option key={t.id} value={t.id}>{t.name}</option>
-                        ))}
-                      </select>
+                      <div className="flex-1 w-full rounded-lg border border-border bg-background/60 p-3">
+                        <p className="text-xs uppercase tracking-wide text-muted font-semibold mb-1">
+                          Topic Interview
+                        </p>
+                        <p className="text-xs text-muted mb-2">
+                          Pick one topic and practice only questions from that topic.
+                        </p>
+                        <select
+                          value={selectedTopicId}
+                          onChange={(e) => setSelectedTopicId(e.target.value)}
+                          className="flex-1 w-full"
+                        >
+                          {topics.map((t) => (
+                            <option key={t.id} value={t.id}>{t.name}</option>
+                          ))}
+                        </select>
+                      </div>
                     )}
                     <div className="w-full sm:w-auto flex flex-col sm:flex-row gap-2">
                       {interviewMode === "resume" && (
@@ -383,7 +447,7 @@ export default function DashboardPage() {
                               Verifying...
                             </>
                           ) : (
-                            "Verify JD"
+                            "Verify Resume vs JD"
                           )}
                         </button>
                       )}
@@ -399,7 +463,7 @@ export default function DashboardPage() {
                           </>
                         ) : (
                           <>
-                            Start Practice
+                            Start Interview
                             <ChevronRight className="w-4 h-4" />
                           </>
                         )}

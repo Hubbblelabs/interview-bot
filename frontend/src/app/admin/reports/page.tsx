@@ -77,9 +77,9 @@ export default function AdminReportsPage() {
   return (
     <ProtectedRoute requiredRole="admin">
       <Navbar />
-      <main className="pt-20 md:pt-8 pb-12 px-4 max-w-5xl mx-auto md:ml-[var(--admin-sidebar-width,250px)]">
+      <main className="app-page-shell md:pt-8 md:ml-[var(--admin-sidebar-width,250px)]">
         <div className="animate-fade-in">
-          <div className="flex items-center gap-3 mb-6">
+          <div className="app-page-heading">
             <BarChart3 className="w-6 h-6" />
             <h1 className="text-2xl font-bold">Interview Reports</h1>
           </div>
@@ -138,7 +138,7 @@ export default function AdminReportsPage() {
           {loading ? (
             <div className="text-center text-muted mt-12 animate-pulse-slow">Loading reports...</div>
           ) : filteredItems.length === 0 ? (
-            <div className="text-center mt-16">
+            <div className="app-empty-state">
               <FileText className="w-12 h-12 text-muted mx-auto mb-4" />
               <p className="text-muted">No interview reports found for current filters.</p>
             </div>
@@ -151,10 +151,10 @@ export default function AdminReportsPage() {
                   href={`/admin/reports/${item.session_id}`}
                   className="app-list-item"
                 >
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-semibold text-lg mb-1">{item.user_name} ({item.user_email})</p>
-                      <p className="text-sm text-muted">{item.role_title}</p>
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0 flex-1">
+                      <p className="font-semibold text-lg mb-1 break-words">{item.user_name} ({item.user_email})</p>
+                      <p className="text-sm text-muted break-words">{item.role_title}</p>
                       <p className="text-xs text-muted mt-2">
                         {new Date(item.completed_at).toLocaleString()} • {item.total_questions} questions
                       </p>

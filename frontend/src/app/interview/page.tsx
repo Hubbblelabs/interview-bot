@@ -8,10 +8,9 @@ import api from "@/lib/api";
 import {
   speak,
   stopSpeaking,
-  createSpeechRecognition,
-  isSpeechRecognitionSupported,
   SpeechVoiceGender,
   warmupSpeechVoices,
+  prepareSpeech,
 } from "@/lib/speech";
 import {
   Mic,
@@ -62,26 +61,72 @@ function InterviewContent() {
   const [speechFinalTranscript, setSpeechFinalTranscript] = useState("");
   const [speechStageWarning, setSpeechStageWarning] = useState("");
   const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isSpeakerEnabled, setIsSpeakerEnabled] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isComplete, setIsComplete] = useState(false);
   const [generatingReport, setGeneratingReport] = useState(false);
   const [isQuitting, setIsQuitting] = useState(false);
+  const [isPreparingQuestionAudio, setIsPreparingQuestionAudio] = useState(false);
   const [voiceGender, setVoiceGender] = useState<SpeechVoiceGender>("female");
   const [voiceReady, setVoiceReady] = useState(false);
   const [jdAlignment, setJdAlignment] = useState<JobDescriptionAlignment | null>(null);
 
-  const recognitionRef = useRef<any>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<BlobPart[]>([]);
   const hasSpokenRef = useRef(false);
-  const sttSupported = isSpeechRecognitionSupported();
+  const preparedQuestionRef = useRef("");
+  const sttSupported =
+    typeof window !== "undefined" &&
+    typeof MediaRecorder !== "undefined" &&
+    !!navigator.mediaDevices?.getUserMedia;
   const [isSpeechStepComplete, setIsSpeechStepComplete] = useState(!sttSupported);
 
   useEffect(() => {
-    if (currentQuestion && voiceReady && !hasSpokenRef.current) {
+    if (!currentQuestion || !voiceReady || !isSpeakerEnabled || hasSpokenRef.current) return;
+
+    let cancelled = false;
+    const prepareAndPlay = async () => {
+      setIsPreparingQuestionAudio(true);
+      try {
+        if (preparedQuestionRef.current !== currentQuestion) {
+          await Promise.race([
+            prepareSpeech(currentQuestion, { voiceGender, style: "assistant" }),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error("speech prepare timeout")), 12000)
+            ),
+          ]);
+        }
+      } catch {
+        // Continue; speak() still handles runtime retries/fallback behavior.
+      }
+
+      if (cancelled) return;
+      preparedQuestionRef.current = "";
       hasSpokenRef.current = true;
+      setIsPreparingQuestionAudio(false);
       playQuestion();
-    }
-  }, [currentQuestion, voiceReady]);
+    };
+
+    void prepareAndPlay();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentQuestion, voiceReady, voiceGender, isSpeakerEnabled]);
+
+  useEffect(() => {
+    return () => {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        mediaRecorderRef.current.stop();
+      }
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+        mediaStreamRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const localVoice = localStorage.getItem("speech_voice_gender") as SpeechVoiceGender | null;
@@ -146,6 +191,7 @@ function InterviewContent() {
   }, [timerEnabled, timeLeft, isComplete, isTimeUp]);
 
   const playQuestion = () => {
+    if (!isSpeakerEnabled) return;
     setIsSpeaking(true);
     speak(currentQuestion, () => setIsSpeaking(false), {
       voiceGender,
@@ -158,32 +204,118 @@ function InterviewContent() {
     setIsSpeaking(false);
   };
 
-  const startRecording = () => {
-    if (!sttSupported) return;
-    const recognition = createSpeechRecognition(
-      (text, finalText) => {
-        setAnswer(text);
-        setSpeechFinalTranscript(finalText);
-      },
-      () => setIsRecording(false),
-      (error) => {
-        console.error("STT error:", error);
-        setIsRecording(false);
-      }
-    );
-    if (recognition) {
-      recognitionRef.current = recognition;
-      recognition.start();
-      setIsRecording(true);
+  const toggleSpeaker = () => {
+    if (isSpeakerEnabled) {
+      setIsSpeakerEnabled(false);
+      stopQuestion();
+      return;
+    }
+
+    setIsSpeakerEnabled(true);
+    if (currentQuestion && voiceReady && !isPreparingQuestionAudio) {
+      hasSpokenRef.current = false;
+      playQuestion();
     }
   };
 
-  const stopRecording = () => {
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-      recognitionRef.current = null;
+  const releaseRecorderResources = () => {
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+      mediaStreamRef.current = null;
     }
-    setIsRecording(false);
+    mediaRecorderRef.current = null;
+    audioChunksRef.current = [];
+  };
+
+  const startRecording = () => {
+    if (!sttSupported || isTranscribing) return;
+
+    const beginRecording = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaStreamRef.current = stream;
+
+        const preferredMime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+          ? "audio/webm;codecs=opus"
+          : MediaRecorder.isTypeSupported("audio/webm")
+          ? "audio/webm"
+          : "";
+
+        const recorder = preferredMime
+          ? new MediaRecorder(stream, { mimeType: preferredMime })
+          : new MediaRecorder(stream);
+
+        audioChunksRef.current = [];
+        recorder.ondataavailable = (event) => {
+          if (event.data && event.data.size > 0) {
+            audioChunksRef.current.push(event.data);
+          }
+        };
+
+        recorder.onstop = async () => {
+          setIsRecording(false);
+          setIsTranscribing(true);
+          try {
+            const blob = new Blob(audioChunksRef.current, {
+              type: recorder.mimeType || "audio/webm",
+            });
+            if (blob.size === 0) {
+              throw new Error("No audio captured. Please record again.");
+            }
+
+            const formData = new FormData();
+            formData.append("audio", blob, "speech.webm");
+            formData.append("language", "en");
+
+            const { data } = await api.post("/speech/transcribe", formData, {
+              headers: { "Content-Type": "multipart/form-data" },
+              timeout: 120000,
+            });
+
+            const transcribed = (data?.text || "").trim();
+            if (!transcribed) {
+              throw new Error("No speech detected. Please speak clearly and try again.");
+            }
+
+            setSpeechFinalTranscript(transcribed);
+            setAnswer(transcribed);
+            setSpeechStageWarning("");
+          } catch (err: any) {
+            alert(err.response?.data?.detail || err.message || "Failed to transcribe audio");
+          } finally {
+            setIsTranscribing(false);
+            releaseRecorderResources();
+          }
+        };
+
+        recorder.onerror = () => {
+          setIsRecording(false);
+          setIsTranscribing(false);
+          releaseRecorderResources();
+          alert("Microphone recording failed. Please try again.");
+        };
+
+        mediaRecorderRef.current = recorder;
+        recorder.start(200);
+        setSpeechStageWarning("");
+        setSpeechFinalTranscript("");
+        setAnswer("");
+        setIsSpeechStepComplete(false);
+        setIsRecording(true);
+      } catch (err: any) {
+        setIsRecording(false);
+        releaseRecorderResources();
+        alert(err.message || "Microphone access failed");
+      }
+    };
+
+    void beginRecording();
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+    }
   };
 
   const submitAnswer = async () => {
@@ -193,6 +325,10 @@ function InterviewContent() {
     }
     if (sttSupported && !isSpeechStepComplete) {
       alert("Complete speech first, then review in editor before submit.");
+      return;
+    }
+    if (isTranscribing) {
+      alert("Transcription is in progress. Please wait a moment.");
       return;
     }
     if (!answer.trim()) return;
@@ -210,6 +346,20 @@ function InterviewContent() {
       if (data.is_complete) {
         setIsComplete(true);
       } else if (data.next_question) {
+        const nextQuestionText = data.next_question.question || "";
+        setIsPreparingQuestionAudio(true);
+        try {
+          await Promise.race([
+            prepareSpeech(nextQuestionText, { voiceGender, style: "assistant" }),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error("next question speech prepare timeout")), 12000)
+            ),
+          ]);
+          preparedQuestionRef.current = nextQuestionText;
+        } catch {
+          preparedQuestionRef.current = "";
+        }
+
         hasSpokenRef.current = false;
         setCurrentQuestion(data.next_question.question);
         setQuestionId(data.next_question.question_id);
@@ -274,8 +424,12 @@ function InterviewContent() {
     }
 
     stopRecording();
+    if (isTranscribing) {
+      alert("Please wait until transcription finishes.");
+      return;
+    }
     if (!speechFinalTranscript.trim()) {
-      alert("Please speak your answer before continuing to editor.");
+      alert("Please record your answer first, then continue to editor.");
       return;
     }
     setSpeechStageWarning("");
@@ -454,15 +608,18 @@ function InterviewContent() {
                 {currentQuestion}
               </p>
               <button
-                onClick={isSpeaking ? stopQuestion : playQuestion}
+                onClick={toggleSpeaker}
+                disabled={isPreparingQuestionAudio}
                 className={`p-3 rounded-lg shrink-0 transition-colors ${
-                  isSpeaking
+                  !isSpeakerEnabled
+                    ? "bg-rose-500/15 text-rose-400"
+                    : isSpeaking
                     ? "bg-white text-black"
                     : "bg-white/5 text-muted hover:text-white hover:bg-white/10"
-                }`}
-                title={isSpeaking ? "Stop audio" : "Play audio"}
+                } disabled:opacity-60 disabled:cursor-not-allowed`}
+                title={isSpeakerEnabled ? "Turn speaker off" : "Turn speaker on"}
               >
-                {isSpeaking ? (
+                {!isSpeakerEnabled ? (
                   <VolumeX className="w-5 h-5" />
                 ) : (
                   <Volume2 className="w-5 h-5" />
@@ -471,11 +628,19 @@ function InterviewContent() {
             </div>
             <button
               onClick={playQuestion}
+              disabled={isPreparingQuestionAudio || !isSpeakerEnabled}
               className="mt-4 px-3 py-2 rounded-lg border border-border bg-white/5 text-sm text-muted hover:text-white hover:bg-white/10 transition-colors inline-flex items-center gap-2"
             >
               <RotateCcw className="w-4 h-4" />
-              Repeat Question Speech
+              {isSpeakerEnabled ? "Repeat Question Speech" : "Speaker Off"}
             </button>
+
+            {isPreparingQuestionAudio && (
+              <div className="mt-3 inline-flex items-center gap-2 text-xs text-muted">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                Preparing XTTS voice for this question...
+              </div>
+            )}
           </div>
 
           <div className="p-6 rounded-xl bg-card border border-border">
@@ -487,14 +652,19 @@ function InterviewContent() {
               {sttSupported && (
                 <button
                   onClick={isRecording ? stopRecording : startRecording}
-                  disabled={isTimeUp}
+                  disabled={isTimeUp || isTranscribing}
                   className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-all ${
                     isRecording
                       ? "bg-red-500/20 text-red-400 border border-red-500/30"
                       : "bg-white/5 text-muted hover:text-white border border-border"
                   }`}
                 >
-                  {isRecording ? (
+                  {isTranscribing ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Transcribing...
+                    </>
+                  ) : isRecording ? (
                     <>
                       <MicOff className="w-4 h-4" />
                       Stop Recording
@@ -537,7 +707,7 @@ function InterviewContent() {
             {sttSupported && !isSpeechStepComplete && (
               <button
                 onClick={markSpeechComplete}
-                disabled={!speechFinalTranscript.trim() || isTimeUp}
+                disabled={!speechFinalTranscript.trim() || isTimeUp || isTranscribing}
                 className="mb-3 px-4 py-2 rounded-lg text-sm font-semibold border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Speech Complete
@@ -565,7 +735,7 @@ function InterviewContent() {
               </p>
               <button
                 onClick={submitAnswer}
-                disabled={!answer.trim() || isSubmitting || (sttSupported && !isSpeechStepComplete) || isTimeUp}
+                disabled={!answer.trim() || isSubmitting || isTranscribing || (sttSupported && !isSpeechStepComplete) || isTimeUp}
                 className="px-6 py-2.5 bg-white text-black rounded-lg font-semibold text-sm hover:bg-gray-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
               >
                 {isSubmitting ? (

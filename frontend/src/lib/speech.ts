@@ -1,3 +1,5 @@
+import api from "./api";
+
 export const isSpeechSynthesisSupported = () => {
   return typeof window !== "undefined" && "speechSynthesis" in window;
 };
@@ -20,6 +22,120 @@ export const isSpeechRecognitionSupported = () => {
 let synthesisUtterance: SpeechSynthesisUtterance | null = null;
 let speakRequestId = 0;
 const preferredVoiceUriByGender: Partial<Record<SpeechVoiceGender, string>> = {};
+let currentAudio: HTMLAudioElement | null = null;
+let currentAudioUrl: string | null = null;
+const backendAudioCache = new Map<string, Blob>();
+const backendAudioInFlight = new Map<string, Promise<Blob>>();
+let audioPlaybackUnlocked = false;
+
+const BACKEND_TTS_TIMEOUT_MS = 90000;
+const BACKEND_CACHE_LIMIT = 40;
+const SILENT_WAV_DATA_URI =
+  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=";
+
+const normalizeVoiceGender = (value?: SpeechVoiceGender): "male" | "female" => {
+  return value === "male" ? "male" : "female";
+};
+
+const cacheBackendAudio = (key: string, blob: Blob) => {
+  if (backendAudioCache.has(key)) {
+    backendAudioCache.delete(key);
+  }
+  backendAudioCache.set(key, blob);
+  if (backendAudioCache.size > BACKEND_CACHE_LIMIT) {
+    const oldestKey = backendAudioCache.keys().next().value;
+    if (oldestKey) backendAudioCache.delete(oldestKey);
+  }
+};
+
+const resetCurrentAudio = () => {
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio.currentTime = 0;
+    currentAudio.onended = null;
+    currentAudio.onerror = null;
+    currentAudio = null;
+  }
+  if (currentAudioUrl) {
+    URL.revokeObjectURL(currentAudioUrl);
+    currentAudioUrl = null;
+  }
+};
+
+export const unlockSpeechPlayback = async () => {
+  if (audioPlaybackUnlocked || typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    const probe = new Audio(SILENT_WAV_DATA_URI);
+    probe.muted = true;
+    await probe.play();
+    probe.pause();
+    probe.currentTime = 0;
+    audioPlaybackUnlocked = true;
+  } catch {
+    // Ignore unlock failures; speak() still has browser fallback.
+  }
+};
+
+const fetchBackendSpeechAudio = async (
+  text: string,
+  voiceGender: "male" | "female",
+  style: SpeakOptions["style"]
+) => {
+  const cacheKey = `${voiceGender}|${style || "default"}|${text}`;
+
+  const cached = backendAudioCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const inFlight = backendAudioInFlight.get(cacheKey);
+  if (inFlight) {
+    return await inFlight;
+  }
+
+  const promise = (async () => {
+    const response = await api.post(
+      "/speech/synthesize",
+      {
+        text,
+        voice_gender: voiceGender,
+      },
+      {
+        responseType: "arraybuffer",
+        timeout: BACKEND_TTS_TIMEOUT_MS,
+      }
+    );
+    const blob = new Blob([response.data], { type: "audio/wav" });
+    cacheBackendAudio(cacheKey, blob);
+    return blob;
+  })();
+
+  backendAudioInFlight.set(cacheKey, promise);
+  try {
+    return await promise;
+  } finally {
+    backendAudioInFlight.delete(cacheKey);
+  }
+};
+
+export const prefetchSpeech = (text: string, options?: SpeakOptions) => {
+  const content = (text || "").trim();
+  if (!content) return;
+  const backendVoiceGender = normalizeVoiceGender(options?.voiceGender);
+  void fetchBackendSpeechAudio(content, backendVoiceGender, options?.style).catch(() => {
+    // Silent prefetch failure; speak() has runtime fallback.
+  });
+};
+
+export const prepareSpeech = async (text: string, options?: SpeakOptions) => {
+  const content = (text || "").trim();
+  if (!content) return;
+  const backendVoiceGender = normalizeVoiceGender(options?.voiceGender);
+  await fetchBackendSpeechAudio(content, backendVoiceGender, options?.style);
+};
 
 const FEMALE_HINTS = ["female", "woman", "samantha", "zira", "aria", "jenny", "karen", "susan"];
 const MALE_HINTS = ["male", "man", "david", "mark", "guy", "ryan", "adam", "george"];
@@ -93,6 +209,17 @@ const waitForVoices = (timeoutMs = 1200): Promise<SpeechSynthesisVoice[]> => {
 
 export const warmupSpeechVoices = async () => {
   await waitForVoices();
+
+  // Warm up authenticated speech endpoint if available.
+  try {
+    await api.get("/speech/health");
+  } catch {
+    // Keep silent: browser fallback still works.
+  }
+
+  // Fire-and-forget XTTS warmup and a tiny prefetch so first interview play starts faster.
+  void api.post("/speech/warmup", {}, { timeout: 60000 }).catch(() => undefined);
+  prefetchSpeech("Interview starts now.", { voiceGender: "female", style: "assistant" });
 };
 
 const resolvePreferredVoice = (voices: SpeechSynthesisVoice[], voiceGender: SpeechVoiceGender) => {
@@ -109,51 +236,115 @@ const resolvePreferredVoice = (voices: SpeechSynthesisVoice[], voiceGender: Spee
   return picked;
 };
 
+const shouldUseBrowserFallback = (options?: SpeakOptions) => options?.style !== "assistant";
+
+const speakWithBrowserFallback = async (
+  text: string,
+  requestId: number,
+  onEnd?: () => void,
+  options?: SpeakOptions
+) => {
+  const voices = await waitForVoices();
+  if (requestId !== speakRequestId) return;
+
+  synthesisUtterance = new SpeechSynthesisUtterance(text);
+
+  const voiceGender = options?.voiceGender || "auto";
+  const preferredVoice = resolvePreferredVoice(voices, voiceGender);
+  if (preferredVoice) {
+    synthesisUtterance.voice = preferredVoice;
+  }
+
+  if (options?.style === "assistant") {
+    synthesisUtterance.rate = 1.04;
+    synthesisUtterance.pitch = voiceGender === "male" ? 0.9 : 1.0;
+    synthesisUtterance.volume = 1.0;
+  } else {
+    synthesisUtterance.rate = 1.0;
+    synthesisUtterance.pitch = 1.0;
+    synthesisUtterance.volume = 1.0;
+  }
+
+  if (onEnd) {
+    synthesisUtterance.onend = onEnd;
+    synthesisUtterance.onerror = onEnd;
+  }
+
+  window.speechSynthesis.speak(synthesisUtterance);
+};
+
 export const speak = (text: string, onEnd?: () => void, options?: SpeakOptions) => {
+  const content = (text || "").trim();
+  if (!content) {
+    if (onEnd) onEnd();
+    return;
+  }
+
   if (!isSpeechSynthesisSupported()) {
     console.warn("Speech synthesis is not supported in this browser.");
     if (onEnd) onEnd();
     return;
   }
 
-  // Stop any currently playing speech and create an id so stale async plays are ignored.
+  // Stop currently playing speech and create an id so stale async plays are ignored.
   stopSpeaking();
   const requestId = ++speakRequestId;
-
-  const voiceGender = options?.voiceGender || "auto";
+  const backendVoiceGender = normalizeVoiceGender(options?.voiceGender);
 
   void (async () => {
-    const voices = await waitForVoices();
-    if (requestId !== speakRequestId) return;
+    try {
+      const wavBlob = await fetchBackendSpeechAudio(content, backendVoiceGender, options?.style);
 
-    synthesisUtterance = new SpeechSynthesisUtterance(text);
+      if (requestId !== speakRequestId || !wavBlob) return;
 
-    const preferredVoice = resolvePreferredVoice(voices, voiceGender);
-    if (preferredVoice) {
-      synthesisUtterance.voice = preferredVoice;
+      resetCurrentAudio();
+      currentAudioUrl = URL.createObjectURL(wavBlob);
+      currentAudio = new Audio(currentAudioUrl);
+      currentAudio.preload = "auto";
+      currentAudio.playbackRate = options?.style === "assistant" ? 1.12 : 1.08;
+
+      const finish = () => {
+        if (requestId !== speakRequestId) return;
+        if (onEnd) onEnd();
+      };
+
+      currentAudio.onended = finish;
+      currentAudio.onerror = () => {
+        void (async () => {
+          try {
+            await unlockSpeechPlayback();
+            if (requestId !== speakRequestId || !currentAudio) return;
+            await currentAudio.play();
+          } catch {
+            if (shouldUseBrowserFallback(options)) {
+              await speakWithBrowserFallback(content, requestId, onEnd, options);
+              return;
+            }
+            if (onEnd) onEnd();
+          }
+        })();
+      };
+
+      try {
+        await currentAudio.play();
+      } catch {
+        await unlockSpeechPlayback();
+        await currentAudio.play();
+      }
+    } catch {
+      // Network/model issue: fallback to browser speech to keep interview flow stable.
+      if (shouldUseBrowserFallback(options)) {
+        await speakWithBrowserFallback(content, requestId, onEnd, options);
+      } else if (onEnd) {
+        onEnd();
+      }
     }
-
-    if (options?.style === "assistant") {
-      synthesisUtterance.rate = 0.94;
-      synthesisUtterance.pitch = voiceGender === "male" ? 0.9 : 1.0;
-      synthesisUtterance.volume = 1.0;
-    } else {
-      synthesisUtterance.rate = 1.0;
-      synthesisUtterance.pitch = 1.0;
-      synthesisUtterance.volume = 1.0;
-    }
-
-    if (onEnd) {
-      synthesisUtterance.onend = onEnd;
-      synthesisUtterance.onerror = onEnd;
-    }
-
-    window.speechSynthesis.speak(synthesisUtterance);
   })();
 };
 
 export const stopSpeaking = () => {
   speakRequestId += 1;
+  resetCurrentAudio();
   if (isSpeechSynthesisSupported()) {
     window.speechSynthesis.cancel();
     synthesisUtterance = null;
