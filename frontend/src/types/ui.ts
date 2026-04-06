@@ -21,36 +21,6 @@ export interface HeroSectionProps {
   fontWeight?: number;
 }
 
-export interface PracticeLayoutProps {
-  children: ReactNode;
-}
-
-export interface UserAvatarProps {
-  isVibrating: boolean;
-  src?: string;
-  className?: string;
-}
-
-export interface RecordButtonProps {
-  isRecording: boolean;
-  onToggle: () => void;
-  disabled?: boolean;
-  className?: string;
-}
-
-export interface AnswerPopupProps {
-  isOpen: boolean;
-  transcript: string;
-  onConfirm: () => void;
-  onRetry: () => void;
-}
-
-export interface QuestionDisplayProps {
-  question: string;
-  index: number;
-  total: number;
-}
-
 export interface HeatmapProps {
   total: number;
   answeredCount: number;

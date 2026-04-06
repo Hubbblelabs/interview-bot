@@ -374,7 +374,7 @@ export default function SettingsPage() {
 
           <div className="p-6 rounded-xl bg-card border border-border mb-6">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold">Interview Voice (XTTS v2)</h2>
+              <h2 className="text-lg font-semibold">Interview-Bot Voice </h2>
               <button
                 onClick={saveVoiceSettings}
                 disabled={savingVoice}
@@ -391,10 +391,6 @@ export default function SettingsPage() {
               </button>
             </div>
 
-            <p className="text-xs text-muted mb-4">
-              Default mapped voices: Female = #045 Alexandra Hisakawa, Male = #021 Abrahan Mack. Playback is tuned for faster interview delivery.
-            </p>
-
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <button
                 onClick={() => setVoiceGender("female")}
@@ -405,7 +401,6 @@ export default function SettingsPage() {
                 }`}
               >
                 <p className="font-medium">Female Voice</p>
-                <p className="text-xs text-muted mt-1">#045 Alexandra Hisakawa</p>
               </button>
 
               <button
@@ -417,7 +412,6 @@ export default function SettingsPage() {
                 }`}
               >
                 <p className="font-medium">Male Voice</p>
-                <p className="text-xs text-muted mt-1">#021 Abrahan Mack</p>
               </button>
 
               <button
@@ -429,34 +423,7 @@ export default function SettingsPage() {
                 }`}
               >
                 <p className="font-medium">Auto Voice</p>
-                <p className="text-xs text-muted mt-1">Stable default (Female #045)</p>
               </button>
-            </div>
-
-            <div className="mt-4 rounded-lg border border-border bg-background/60 p-3">
-              <p className="text-xs font-semibold text-muted mb-2">Quick Voice Preview</p>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-2">
-                <div>
-                  <p className="text-xs text-muted mb-1">Female #045</p>
-                  <audio controls preload="none" className="w-full">
-                    <source src="/xtts_samples/045.wav" type="audio/wav" />
-                  </audio>
-                </div>
-                <div>
-                  <p className="text-xs text-muted mb-1">Male #021</p>
-                  <audio controls preload="none" className="w-full">
-                    <source src="/xtts_samples/021.wav" type="audio/wav" />
-                  </audio>
-                </div>
-              </div>
-              <a
-                href="/xtts_samples/index.html"
-                target="_blank"
-                rel="noreferrer"
-                className="text-xs text-primary hover:underline"
-              >
-                Open full XTTS voice list (58 samples)
-              </a>
             </div>
           </div>
 
