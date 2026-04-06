@@ -1,5 +1,6 @@
 import json
 import asyncio
+import random
 from bson import ObjectId
 from database import get_db, get_redis
 from models.collections import SESSIONS, USERS, JOB_ROLES, SKILLS, QUESTIONS, TOPICS, TOPIC_QUESTIONS, ROLE_REQUIREMENTS, RESUMES
@@ -431,7 +432,7 @@ async def _start_topic_interview(user_id: str, topic_id: str) -> dict:
     if not topic.get("is_published", False):
         raise ValueError("This topic interview is not published yet")
 
-    topic_questions = await db[TOPIC_QUESTIONS].find({"topic_id": topic_id}).sort("created_at", -1).to_list(length=200)
+    topic_questions = await db[TOPIC_QUESTIONS].find({"topic_id": topic_id}).to_list(length=200)
     if not topic_questions:
         raise ValueError("No questions found for selected topic")
 
@@ -439,6 +440,8 @@ async def _start_topic_interview(user_id: str, topic_id: str) -> dict:
     timer_seconds = topic.get("timer_seconds") if timer_enabled else None
 
     total_questions = min(MAX_QUESTIONS, len(topic_questions))
+    # Randomize question selection for each interview session
+    random.shuffle(topic_questions)
     selected = topic_questions[:total_questions]
 
     session_id = generate_id()
