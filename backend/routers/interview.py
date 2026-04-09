@@ -35,6 +35,8 @@ async def start_interview_endpoint(
             job_description_id=request.job_description_id,
         )
         return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

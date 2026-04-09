@@ -31,7 +31,8 @@ def _resolve_compute_type(device: str) -> str:
 
 
 def _resolve_model_size() -> str:
-    return os.getenv("WHISPER_MODEL_SIZE", "base").strip() or "base"
+    # Prefer medium for better interview transcription quality.
+    return os.getenv("WHISPER_MODEL_SIZE", "medium").strip() or "medium"
 
 
 async def _get_whisper_model():

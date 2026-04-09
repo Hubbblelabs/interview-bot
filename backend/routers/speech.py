@@ -40,7 +40,13 @@ async def synthesize_speech(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        # XTTS may be in cold-start transition; warm once and retry before failing.
+        try:
+            await warmup_xtts_model()
+            wav_bytes = await synthesize_wav(request.text, request.voice_gender)
+            return Response(content=wav_bytes, media_type="audio/wav")
+        except RuntimeError:
+            raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Speech synthesis failed: {str(e)}")
 

@@ -299,6 +299,7 @@ async def generate_interview_question(
 
 Generate ONE interview question for this candidate. The question should:
 1. Be relevant to the role and candidate's skills
+1a. Ask ONLY from the provided Candidate Skill Focus Areas. Do not introduce technologies/skills outside that list.
 2. Match the {difficulty} difficulty level
 3. Be clear and specific
 4. Test practical knowledge
@@ -368,6 +369,7 @@ Generate exactly {count} interview questions as a JSON array where each item fol
 
 Rules:
 1. Questions must be relevant to the role and listed skills.
+1a. Ask ONLY from the provided Candidate Skill Focus Areas. Do not introduce skills outside this list.
 2. Do not repeat or rephrase previous questions.
 3. If stage is "foundation": ask only core fundamentals.
 4. If stage is "deep": ask applied/scenario/debugging/trade-off questions only.
@@ -463,6 +465,7 @@ Input JSON:
 Instructions:
 1. Generate exactly {count} follow-up questions using answered_qa context.
     2. Questions must continue naturally from candidate's previous answers.
+    2a. Ask ONLY from the provided skills list. Do not introduce new unrelated skills/tools.
 3. Do not repeat or paraphrase any question in previous_questions.
     4. Prioritize loose_qa first: if any answer is vague/short/uncertain, ask a direct follow-up that probes missing concept depth.
     5. Focus on concept validation (why, how, trade-offs, failure modes), not memorized definitions.
