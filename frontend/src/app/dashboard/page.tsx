@@ -27,6 +27,7 @@ import {
   Clock,
   ChevronRight,
   Loader2,
+  Download,
 } from "lucide-react";
 import { PageSkeleton } from "@/components/Skeleton";
 
@@ -45,6 +46,7 @@ export default function DashboardPage() {
   const [isStartingInterview, setIsStartingInterview] = useState(false);
   const [isVerifyingMatch, setIsVerifyingMatch] = useState(false);
   const [verificationResult, setVerificationResult] = useState<JobDescriptionAlignment | null>(null);
+  const [verificationSnapshot, setVerificationSnapshot] = useState<any | null>(null);
 
   const getApiErrorMessage = (err: any, fallbackMessage: string) => {
     const status = err?.response?.status;
@@ -80,7 +82,18 @@ export default function DashboardPage() {
 
   useEffect(() => {
     setVerificationResult(null);
+    setVerificationSnapshot(null);
   }, [interviewMode, selectedRoleInput, selectedJdId]);
+
+  useEffect(() => {
+    if (!verificationSnapshot) return;
+    const currentResumeUploadedAt = profile?.resume?.uploaded_at || "";
+    const snapshotResumeUploadedAt = verificationSnapshot?.resume_snapshot?.uploaded_at || "";
+    if (currentResumeUploadedAt && snapshotResumeUploadedAt && currentResumeUploadedAt !== snapshotResumeUploadedAt) {
+      setVerificationResult(null);
+      setVerificationSnapshot(null);
+    }
+  }, [profile?.resume?.uploaded_at, verificationSnapshot]);
 
   const fetchDashboardData = async () => {
     try {
@@ -141,6 +154,103 @@ export default function DashboardPage() {
     return payload;
   };
 
+  const downloadVerificationPdf = async () => {
+    if (!verificationSnapshot || !verificationResult) {
+      alert("Run Resume vs JD verification first.");
+      return;
+    }
+
+    const { jsPDF } = await import("jspdf");
+    const doc = new jsPDF({ unit: "pt", format: "a4" });
+
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const margin = 40;
+    const maxWidth = pageWidth - margin * 2;
+    let y = 46;
+
+    const ensureSpace = (needed = 20) => {
+      if (y + needed <= pageHeight - 40) return;
+      doc.addPage();
+      y = 46;
+    };
+
+    const addHeading = (text: string) => {
+      ensureSpace(28);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(16);
+      doc.text(text, margin, y);
+      y += 24;
+    };
+
+    const addLabelValue = (label: string, value: string) => {
+      ensureSpace(22);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(11);
+      doc.text(`${label}:`, margin, y);
+      doc.setFont("helvetica", "normal");
+      const lines = doc.splitTextToSize(value || "-", maxWidth - 90);
+      doc.text(lines, margin + 90, y);
+      y += Math.max(18, lines.length * 14);
+    };
+
+    const addList = (title: string, items: string[]) => {
+      ensureSpace(22);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(12);
+      doc.text(title, margin, y);
+      y += 16;
+
+      const values = (items || []).length ? items : ["-"];
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(11);
+      values.forEach((item) => {
+        const lines = doc.splitTextToSize(`- ${item}`, maxWidth - 8);
+        ensureSpace(lines.length * 14 + 4);
+        doc.text(lines, margin + 6, y);
+        y += lines.length * 14;
+      });
+      y += 6;
+    };
+
+    const jd = verificationSnapshot?.job_description || {};
+    const resume = verificationSnapshot?.resume_snapshot || {};
+    const parsed = resume?.parsed_data || {};
+    const savedAt = verificationSnapshot?.saved_at || new Date().toISOString();
+
+    addHeading("Resume vs Job Description Verification");
+    addLabelValue("Verification ID", verificationSnapshot?.verification_id || "-");
+    addLabelValue("Saved At", new Date(savedAt).toLocaleString());
+    addLabelValue("Role", verificationSnapshot?.role_title || selectedRoleInput || "-");
+
+    y += 6;
+    addHeading("Job Description Snapshot");
+    addLabelValue("JD Title", jd?.title || "-");
+    addLabelValue("Company", jd?.company || "-");
+    addLabelValue("Required Skills", (jd?.required_skills || []).join(", ") || "-");
+    addLabelValue("JD Description", jd?.description || "-");
+
+    y += 6;
+    addHeading("Resume Snapshot");
+    addLabelValue("Resume File", resume?.filename || profile?.resume?.filename || "-");
+    addLabelValue("Candidate", parsed?.name || profile?.name || "-");
+    addLabelValue("Email", parsed?.email || profile?.email || "-");
+    addLabelValue("Phone", parsed?.phone || "-");
+    addLabelValue("Location", parsed?.location || "-");
+    addLabelValue("Extracted Skills", (resume?.skills || profile?.skills || []).join(", ") || "-");
+    addLabelValue("Experience Summary", parsed?.experience_summary || "-");
+
+    y += 6;
+    addHeading("Alignment Result");
+    addLabelValue("Fit Summary", verificationResult?.fit_summary || "-");
+    addList("Meeting Expectations", verificationResult?.meeting_expectations || []);
+    addList("Missing Expectations", verificationResult?.missing_expectations || []);
+    addList("Improvement Suggestions", verificationResult?.improvement_suggestions || []);
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    doc.save(`resume-jd-verification-${stamp}.pdf`);
+  };
+
   const verifyResumeMatch = async () => {
     if (interviewMode !== "resume") {
       alert("JD verification is only available for Resume Interview mode.");
@@ -164,6 +274,7 @@ export default function DashboardPage() {
       const payload = buildResumeInterviewPayload();
       const { data } = await api.post("/interview/verify", payload);
       setVerificationResult(data?.jd_alignment || null);
+      setVerificationSnapshot(data || null);
     } catch (err: any) {
       alert(getApiErrorMessage(err, "Failed to verify resume against job description"));
     } finally {
@@ -171,9 +282,32 @@ export default function DashboardPage() {
     }
   };
 
+  const isVerificationFresh = () => {
+    if (!verificationResult || !verificationSnapshot) {
+      return false;
+    }
+
+    const snapshotJdId = verificationSnapshot?.job_description?.id || "";
+    if (!selectedJdId || snapshotJdId !== selectedJdId) {
+      return false;
+    }
+
+    const currentResumeUploadedAt = profile?.resume?.uploaded_at || "";
+    const snapshotResumeUploadedAt = verificationSnapshot?.resume_snapshot?.uploaded_at || "";
+    if (currentResumeUploadedAt && snapshotResumeUploadedAt && currentResumeUploadedAt !== snapshotResumeUploadedAt) {
+      return false;
+    }
+
+    return true;
+  };
+
   const startInterview = async () => {
     if (interviewMode === "resume" && (!selectedRoleInput.trim() || !profile?.resume)) {
       alert("Please upload your resume first and select or type a job role.");
+      return;
+    }
+    if (interviewMode === "resume" && !selectedJdId) {
+      alert("Please select a Job Description before starting Resume Interview.");
       return;
     }
     if (interviewMode === "topic" && !selectedTopicId) {
@@ -188,10 +322,21 @@ export default function DashboardPage() {
       const payload: any = {
         interview_type: interviewMode,
       };
+      let verifiedAlignment: any = verificationResult;
+      let verifiedSnapshot: any = verificationSnapshot;
 
       if (interviewMode === "topic") {
         payload.topic_id = selectedTopicId;
       } else {
+        // Reuse saved verification unless JD/resume changed.
+        if (!isVerificationFresh()) {
+          const verifyPayload = buildResumeInterviewPayload();
+          const verifyRes = await api.post("/interview/verify", verifyPayload);
+          verifiedAlignment = verifyRes.data?.jd_alignment || null;
+          verifiedSnapshot = verifyRes.data || null;
+          setVerificationResult(verifiedAlignment);
+          setVerificationSnapshot(verifiedSnapshot);
+        }
         Object.assign(payload, buildResumeInterviewPayload());
       }
 
@@ -223,7 +368,7 @@ export default function DashboardPage() {
         // Continue to interview page; runtime speech fallback still applies.
       }
 
-      const alignmentToStore = verificationResult || data?.jd_alignment;
+      const alignmentToStore = verifiedAlignment || data?.jd_alignment;
       if (typeof window !== "undefined" && alignmentToStore) {
         sessionStorage.setItem(`jd_alignment:${data.session_id}`, JSON.stringify(alignmentToStore));
       }
@@ -387,17 +532,17 @@ export default function DashboardPage() {
 
                         <div className="rounded-lg border border-border bg-background/60 p-3">
                           <p className="text-xs uppercase tracking-wide text-muted font-semibold mb-1">
-                            Step 2: Choose Job Description - JD (Optional)
+                            Step 2: Choose Job Description - JD (Required)
                           </p>
                           <p className="text-xs text-muted mb-2">
-                            JD is a real job posting used for resume-match verification only. It does not replace Role selection.
+                            JD is required for Resume Interview. Questions are restricted to JD required skills only.
                           </p>
                           <select
                             value={selectedJdId}
                             onChange={(e) => setSelectedJdId(e.target.value)}
                             className="w-full"
                           >
-                            <option value="">No Job Description</option>
+                            <option value="">Select Job Description</option>
                             {jobDescriptions.map((jd) => (
                               <option key={jd.id} value={jd.id}>
                                 {jd.title}{jd.company ? ` - ${jd.company}` : ""}
@@ -411,7 +556,7 @@ export default function DashboardPage() {
                           )}
 
                           <p className="text-[11px] text-muted mt-2">
-                            Summary: Role = question focus. JD = resume gap check.
+                            Summary: Role sets interview context. JD required skills define what can be asked.
                           </p>
                         </div>
                       </div>
@@ -487,8 +632,24 @@ export default function DashboardPage() {
 
                   {verificationResult && interviewMode === "resume" && (
                     <div className="mt-4 p-4 rounded-xl border border-border bg-background/50">
-                      <h3 className="text-sm font-semibold mb-1">Resume vs Job Description</h3>
-                      <p className="text-sm text-muted mb-3">{verificationResult.fit_summary}</p>
+                      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-3">
+                        <div>
+                          <h3 className="text-sm font-semibold mb-1">Resume vs Job Description</h3>
+                          <p className="text-sm text-muted">{verificationResult.fit_summary}</p>
+                          {verificationSnapshot?.saved_at && (
+                            <p className="text-xs text-muted mt-1">
+                              Saved: {new Date(verificationSnapshot.saved_at).toLocaleString()}
+                            </p>
+                          )}
+                        </div>
+                        <button
+                          onClick={downloadVerificationPdf}
+                          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-border bg-white/5 text-sm text-muted hover:text-white hover:bg-white/10 transition-colors"
+                        >
+                          <Download className="w-4 h-4" />
+                          Download PDF
+                        </button>
+                      </div>
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
                         <div>
                           <p className="font-semibold text-green-400 mb-1">Meeting</p>

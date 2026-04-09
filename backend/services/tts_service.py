@@ -8,13 +8,24 @@ _MODEL_CACHE = {}
 _MODEL_LOCK = asyncio.Lock()
 _AUDIO_CACHE = OrderedDict()
 _AUDIO_CACHE_LOCK = asyncio.Lock()
+_SYNTHESIZE_LOCK = asyncio.Lock()
 
 XTTS_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
 XTTS_LANGUAGE = "en"
 XTTS_SPEED = 1.2
-MAX_TEXT_LENGTH = 220
 _XTTS_WARM = False
 AUDIO_CACHE_MAX_ITEMS = 300
+
+
+def _resolve_xtts_max_text_length() -> int:
+    """0 disables truncation so full question text is spoken."""
+    try:
+        return max(0, int(os.getenv("XTTS_MAX_TEXT_LENGTH", "0")))
+    except Exception:
+        return 0
+
+
+XTTS_MAX_TEXT_LENGTH = _resolve_xtts_max_text_length()
 
 # User-approved stable voices:
 # - Female: index 45 => Alexandra Hisakawa
@@ -83,8 +94,10 @@ def _resolve_xtts_speaker(voice_gender: str) -> str:
     return XTTS_SPEAKER_BY_GENDER[gender]
 
 
-def _truncate_text(value: str, max_length: int = MAX_TEXT_LENGTH) -> str:
+def _normalize_text_for_speech(value: str, max_length: int = XTTS_MAX_TEXT_LENGTH) -> str:
     content = " ".join((value or "").strip().split())
+    if max_length <= 0:
+        return content
     if len(content) <= max_length:
         return content
     trimmed = content[:max_length].rstrip()
@@ -181,7 +194,7 @@ async def prefetch_wav(text: str, voice_gender: str = "female") -> None:
 
 
 async def synthesize_wav(text: str, voice_gender: str = "female") -> bytes:
-    content = _truncate_text(text)
+    content = _normalize_text_for_speech(text)
     if not content:
         raise ValueError("text is required")
 
@@ -194,26 +207,32 @@ async def synthesize_wav(text: str, voice_gender: str = "female") -> bytes:
     if cached:
         return cached
 
-    speaker = _resolve_xtts_speaker(normalized_gender)
-    tts = await _get_tts_model(XTTS_MODEL)
+    async with _SYNTHESIZE_LOCK:
+        # Recheck cache after waiting for lock in case another request already synthesized it.
+        cached = await _get_cached_audio(cache_key)
+        if cached:
+            return cached
 
-    fd, tmp_path = tempfile.mkstemp(suffix=".wav")
-    os.close(fd)
-    try:
-        def _synthesize():
-            _synthesize_xtts_to_file(tts, text=content, speaker=speaker, file_path=tmp_path)
+        speaker = _resolve_xtts_speaker(normalized_gender)
+        tts = await _get_tts_model(XTTS_MODEL)
 
+        fd, tmp_path = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
         try:
-            await asyncio.to_thread(_synthesize)
-            with open(tmp_path, "rb") as f:
-                wav = f.read()
-            await _set_cached_audio(cache_key, wav)
-            return wav
-        except Exception:
-            # Keep speech available even if XTTS runtime has temporary issues.
-            wav = await _synthesize_fallback_wav(content, normalized_gender)
-            await _set_cached_audio(cache_key, wav)
-            return wav
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+            def _synthesize():
+                _synthesize_xtts_to_file(tts, text=content, speaker=speaker, file_path=tmp_path)
+
+            try:
+                await asyncio.to_thread(_synthesize)
+                with open(tmp_path, "rb") as f:
+                    wav = f.read()
+                await _set_cached_audio(cache_key, wav)
+                return wav
+            except Exception:
+                # Keep speech available even if XTTS runtime has temporary issues.
+                wav = await _synthesize_fallback_wav(content, normalized_gender)
+                await _set_cached_audio(cache_key, wav)
+                return wav
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)

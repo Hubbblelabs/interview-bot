@@ -30,11 +30,34 @@ let audioPlaybackUnlocked = false;
 
 const BACKEND_TTS_TIMEOUT_MS = 90000;
 const BACKEND_CACHE_LIMIT = 40;
+const BACKEND_TTS_RETRIES = 3;
+const ASSISTANT_TTS_SOFT_TIMEOUT_MS = 12000;
 const SILENT_WAV_DATA_URI =
   "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=";
 
 const normalizeVoiceGender = (value?: SpeechVoiceGender): "male" | "female" => {
   return value === "male" ? "male" : "female";
+};
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isRetryableTtsError = (error: any) => {
+  const status = error?.response?.status;
+  const code = error?.code;
+  if ([429, 500, 502, 503, 504].includes(status)) return true;
+  return code === "ECONNABORTED" || code === "ERR_NETWORK";
+};
+
+const revokeObjectUrlSoon = (url: string | null) => {
+  if (!url) return;
+  // Delay revoke slightly to avoid blob fetch race in some browsers.
+  setTimeout(() => {
+    try {
+      URL.revokeObjectURL(url);
+    } catch {
+      // Ignore revoke failures.
+    }
+  }, 1500);
 };
 
 const cacheBackendAudio = (key: string, blob: Blob) => {
@@ -49,17 +72,21 @@ const cacheBackendAudio = (key: string, blob: Blob) => {
 };
 
 const resetCurrentAudio = () => {
-  if (currentAudio) {
-    currentAudio.pause();
-    currentAudio.currentTime = 0;
-    currentAudio.onended = null;
-    currentAudio.onerror = null;
-    currentAudio = null;
+  const audio = currentAudio;
+  const url = currentAudioUrl;
+
+  if (audio) {
+    audio.pause();
+    audio.currentTime = 0;
+    audio.onended = null;
+    audio.onerror = null;
+    audio.removeAttribute("src");
+    audio.load();
   }
-  if (currentAudioUrl) {
-    URL.revokeObjectURL(currentAudioUrl);
-    currentAudioUrl = null;
-  }
+
+  currentAudio = null;
+  currentAudioUrl = null;
+  revokeObjectUrlSoon(url);
 };
 
 export const unlockSpeechPlayback = async () => {
@@ -97,20 +124,33 @@ const fetchBackendSpeechAudio = async (
   }
 
   const promise = (async () => {
-    const response = await api.post(
-      "/speech/synthesize",
-      {
-        text,
-        voice_gender: voiceGender,
-      },
-      {
-        responseType: "arraybuffer",
-        timeout: BACKEND_TTS_TIMEOUT_MS,
+    let lastError: any = null;
+    for (let attempt = 0; attempt < BACKEND_TTS_RETRIES; attempt++) {
+      try {
+        const response = await api.post(
+          "/speech/synthesize",
+          {
+            text,
+            voice_gender: voiceGender,
+          },
+          {
+            responseType: "arraybuffer",
+            timeout: BACKEND_TTS_TIMEOUT_MS,
+          }
+        );
+        const blob = new Blob([response.data], { type: "audio/wav" });
+        cacheBackendAudio(cacheKey, blob);
+        return blob;
+      } catch (error) {
+        lastError = error;
+        if (attempt >= BACKEND_TTS_RETRIES - 1 || !isRetryableTtsError(error)) {
+          throw error;
+        }
+        await sleep(350 * (attempt + 1));
       }
-    );
-    const blob = new Blob([response.data], { type: "audio/wav" });
-    cacheBackendAudio(cacheKey, blob);
-    return blob;
+    }
+
+    throw lastError;
   })();
 
   backendAudioInFlight.set(cacheKey, promise);
@@ -217,9 +257,13 @@ export const warmupSpeechVoices = async () => {
     // Keep silent: browser fallback still works.
   }
 
-  // Fire-and-forget XTTS warmup and a tiny prefetch so first interview play starts faster.
-  void api.post("/speech/warmup", {}, { timeout: 60000 }).catch(() => undefined);
-  prefetchSpeech("Interview starts now.", { voiceGender: "female", style: "assistant" });
+  // Warmup first, then prefetch once to avoid startup race-related 503 noise.
+  void api
+    .post("/speech/warmup", {}, { timeout: 60000 })
+    .then(() => {
+      prefetchSpeech("Interview starts now.", { voiceGender: "female", style: "assistant" });
+    })
+    .catch(() => undefined);
 };
 
 const resolvePreferredVoice = (voices: SpeechSynthesisVoice[], voiceGender: SpeechVoiceGender) => {
@@ -236,7 +280,23 @@ const resolvePreferredVoice = (voices: SpeechSynthesisVoice[], voiceGender: Spee
   return picked;
 };
 
-const shouldUseBrowserFallback = (options?: SpeakOptions) => options?.style !== "assistant";
+const shouldUseBrowserFallback = (_options?: SpeakOptions) => true;
+
+const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(label)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+};
 
 const speakWithBrowserFallback = async (
   text: string,
@@ -293,7 +353,14 @@ export const speak = (text: string, onEnd?: () => void, options?: SpeakOptions) 
 
   void (async () => {
     try {
-      const wavBlob = await fetchBackendSpeechAudio(content, backendVoiceGender, options?.style);
+      const backendPromise = fetchBackendSpeechAudio(content, backendVoiceGender, options?.style);
+      // Avoid unhandled rejection if a soft-timeout fallback path wins first.
+      backendPromise.catch(() => undefined);
+
+      const wavBlob =
+        options?.style === "assistant"
+          ? await withTimeout(backendPromise, ASSISTANT_TTS_SOFT_TIMEOUT_MS, "assistant tts timeout")
+          : await backendPromise;
 
       if (requestId !== speakRequestId || !wavBlob) return;
 

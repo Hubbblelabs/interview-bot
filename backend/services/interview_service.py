@@ -1,22 +1,25 @@
 import json
 import asyncio
 import random
+import re
 from bson import ObjectId
 from database import get_db, get_redis
-from models.collections import SESSIONS, USERS, JOB_ROLES, SKILLS, QUESTIONS, TOPICS, TOPIC_QUESTIONS, ROLE_REQUIREMENTS, RESUMES
+from models.collections import SESSIONS, USERS, JOB_ROLES, SKILLS, QUESTIONS, TOPICS, TOPIC_QUESTIONS, RESUMES, JD_VERIFICATIONS
 from utils.helpers import generate_id, utc_now, str_objectid
-from utils.skills import normalize_skill_list, find_matching_skills, find_missing_skills, build_interview_focus_skills
+from utils.skills import normalize_skill_list, build_interview_focus_skills
 from services.interview_graph import run_interview_graph
 from utils.gemini import generate_interview_question_batch, analyze_resume_vs_job_description
 from services.job_description_service import get_job_description_for_user
 from services.tts_service import prefetch_wav
 
 MAX_QUESTIONS = 20
+RESUME_MAX_QUESTIONS = 10
+RESUME_INITIAL_BATCH_SIZE = 2
 SESSION_TTL = 7200  # 2 hours
 BATCH_SIZE = 5
 PREGEN_MIN_PENDING = 2
-FOLLOWUP_AI_COUNT = 3
-FOLLOWUP_BANK_COUNT = 2
+FOLLOWUP_AI_COUNT = 2
+FOLLOWUP_BANK_COUNT = 3
 
 # Local process memory summary requested in workflow.
 _LOCAL_SUMMARIES: dict[str, str] = {}
@@ -171,9 +174,48 @@ async def verify_resume_job_description(
         jd_required_skills=selected_jd.get("required_skills", []),
     )
 
+    resume_snapshot = {
+        "filename": resume_doc.get("original_filename") or resume_doc.get("filename") or "",
+        "uploaded_at": resume_doc.get("uploaded_at"),
+        "skills": resume_skills,
+        "parsed_data": {
+            "name": parsed_data.get("name"),
+            "email": parsed_data.get("email"),
+            "phone": parsed_data.get("phone"),
+            "location": parsed_data.get("location"),
+            "recommended_roles": parsed_data.get("recommended_roles", []) or [],
+            "experience_summary": parsed_data.get("experience_summary", "") or "",
+        },
+    }
+
+    verification_id = generate_id()
+    saved_at = utc_now()
+    await db[JD_VERIFICATIONS].insert_one(
+        {
+            "verification_id": verification_id,
+            "user_id": user_id,
+            "role_id": role_id,
+            "custom_role": custom_role,
+            "role_title": role_title,
+            "job_description": {
+                "id": selected_jd.get("id"),
+                "title": selected_jd.get("title"),
+                "company": selected_jd.get("company"),
+                "description": selected_jd.get("description"),
+                "required_skills": selected_jd.get("required_skills", []) or [],
+            },
+            "resume_snapshot": resume_snapshot,
+            "jd_alignment": jd_alignment,
+            "created_at": saved_at,
+        }
+    )
+
     return {
+        "verification_id": verification_id,
+        "saved_at": saved_at,
         "role_title": role_title,
         "job_description": selected_jd,
+        "resume_snapshot": resume_snapshot,
         "jd_alignment": jd_alignment,
         "message": "Verification complete",
     }
@@ -277,6 +319,7 @@ async def _fetch_question_bank_batch(
     role_id: str | None,
     excluded_questions: list[str],
     limit: int,
+    skill_hints: list[str] | None = None,
 ) -> list[dict]:
     if limit <= 0:
         return []
@@ -291,6 +334,16 @@ async def _fetch_question_bank_batch(
         except Exception:
             pass
         query["role_id"] = {"$in": role_candidates}
+
+    normalized_hints = normalize_skill_list(skill_hints or [])
+    if normalized_hints:
+        scope_match = []
+        for skill in normalized_hints:
+            token = re.escape(skill)
+            scope_match.append({"category": {"$regex": token, "$options": "i"}})
+            scope_match.append({"question": {"$regex": token, "$options": "i"}})
+        if scope_match:
+            query["$or"] = scope_match
 
     excluded = {q.strip().lower() for q in excluded_questions if q}
     selected: list[dict] = []
@@ -328,6 +381,7 @@ async def _fetch_question_bank_batch(
             role_id=None,
             excluded_questions=list(excluded),
             limit=limit - len(selected),
+            skill_hints=normalized_hints,
         )
         selected.extend(fallback)
 
@@ -337,6 +391,37 @@ async def _fetch_question_bank_batch(
 def _strict_followup_difficulty(answered_count: int) -> str:
     # After first DB set (Q1-5), follow-ups should feel like real interview pressure.
     return "hard" if answered_count >= 10 else "medium"
+
+
+def _has_followup_opportunity(qa_pairs: list, window: int = BATCH_SIZE) -> bool:
+    """Decide whether Gemini follow-up questions are needed for the latest batch."""
+    if not qa_pairs:
+        return False
+
+    weak_markers = {
+        "i think",
+        "maybe",
+        "not sure",
+        "dont know",
+        "don't know",
+        "etc",
+        "kind of",
+        "sort of",
+    }
+
+    for qa in qa_pairs[-window:]:
+        answer = (qa.get("answer") or "").strip()
+        if not answer:
+            continue
+
+        if len(answer.split()) < 30:
+            return True
+
+        lowered = answer.lower()
+        if any(marker in lowered for marker in weak_markers):
+            return True
+
+    return False
 
 
 async def _generate_mixed_followup_batch(
@@ -362,56 +447,153 @@ async def _generate_mixed_followup_batch(
     answered_count = len(qa_pairs)
     role_title = session.get("role_title", "Software Developer")
     skills = _safe_json_list(session.get("skills", "[]"))
+    jd_required_skills = _safe_json_list(session.get("jd_required_skills", "[]"))
+    resume_source_mode = (session.get("resume_source_mode") or "db").strip().lower()
     current_difficulty = _strict_followup_difficulty(answered_count)
-
-    if target >= 5:
-        ai_target = 3
-        bank_target = 2
-    else:
-        ai_target = min(3, target)
-        bank_target = min(2, max(0, target - ai_target))
 
     from utils.gemini import generate_followup_question_batch_from_qa
 
     gemini_calls = 0
     gemini_questions = 0
 
-    ai_items = await generate_followup_question_batch_from_qa(
-        role_title=role_title,
-        skills=skills,
-        qa_pairs=qa_pairs,
-        previous_questions=previous_questions,
-        count=ai_target,
-        difficulty=current_difficulty,
-    )
-    if ai_target > 0:
-        gemini_calls += 1
-    gemini_questions += len(ai_items)
+    if resume_source_mode == "ai":
+        ai_items = await generate_followup_question_batch_from_qa(
+            role_title=role_title,
+            skills=skills,
+            qa_pairs=qa_pairs,
+            previous_questions=previous_questions,
+            count=target,
+            difficulty=current_difficulty,
+        )
+        gemini_calls = 1 if target > 0 else 0
 
-    exclude_pool = list(previous_questions) + [i.get("question", "") for i in ai_items]
+        deduped_ai = []
+        excluded_lower = {q.strip().lower() for q in previous_questions if q}
+        for item in ai_items:
+            text = (item.get("question") or "").strip()
+            if not text:
+                continue
+            lowered = text.lower()
+            if lowered in excluded_lower:
+                continue
+            deduped_ai.append(item)
+            excluded_lower.add(lowered)
+            if len(deduped_ai) >= target:
+                break
+
+        if len(deduped_ai) < target:
+            refill, refill_last = await _generate_question_batch(
+                role_title=role_title,
+                skills=skills,
+                previous_questions=previous_questions + [i.get("question", "") for i in deduped_ai],
+                generated_count=generated_count + len(deduped_ai),
+                max_questions=max_questions,
+                current_difficulty=current_difficulty,
+                local_summary=_LOCAL_SUMMARIES.get(session_id),
+                batch_size=target - len(deduped_ai),
+            )
+            for item in refill:
+                text = (item.get("question") or "").strip()
+                if not text:
+                    continue
+                lowered = text.lower()
+                if lowered in excluded_lower:
+                    continue
+                deduped_ai.append(item)
+                excluded_lower.add(lowered)
+                if len(deduped_ai) >= target:
+                    break
+            if refill:
+                current_difficulty = refill_last
+
+        final_ai = deduped_ai[:target]
+        last_difficulty = final_ai[-1].get("difficulty", current_difficulty) if final_ai else current_difficulty
+        return final_ai, last_difficulty, {
+            "gemini_calls": gemini_calls,
+            "gemini_questions": len(final_ai),
+            "bank_questions": 0,
+            "bank_shortfall": 0,
+        }
+
+    # Batch policy:
+    # - If follow-up opportunity exists: 2 AI + 3 DB
+    # - Otherwise: 5 DB
+    ai_target = min(FOLLOWUP_AI_COUNT, target) if _has_followup_opportunity(qa_pairs) else 0
+
+    excluded_lower = {q.strip().lower() for q in previous_questions if q}
+    ai_items: list[dict] = []
+
+    if ai_target > 0:
+        generated_ai = await generate_followup_question_batch_from_qa(
+            role_title=role_title,
+            skills=skills,
+            qa_pairs=qa_pairs,
+            previous_questions=previous_questions,
+            count=ai_target,
+            difficulty=current_difficulty,
+        )
+        gemini_calls += 1
+        for item in generated_ai:
+            text = (item.get("question") or "").strip()
+            if not text:
+                continue
+            lowered = text.lower()
+            if lowered in excluded_lower:
+                continue
+            ai_items.append(item)
+            excluded_lower.add(lowered)
+            if len(ai_items) >= ai_target:
+                break
+        gemini_questions += len(ai_items)
+
+    bank_target = max(0, target - len(ai_items))
+    exclude_pool = list(excluded_lower)
     bank_items = await _fetch_question_bank_batch(
         db=db,
         role_id=session.get("role_id"),
         excluded_questions=exclude_pool,
         limit=bank_target,
+        skill_hints=jd_required_skills,
     )
 
+    for item in bank_items:
+        text = (item.get("question") or "").strip()
+        if text:
+            excluded_lower.add(text.lower())
+
     if len(bank_items) < bank_target:
+        # Keep total batch size stable if the bank pool is exhausted.
         refill = bank_target - len(bank_items)
-        refill_ai = await generate_followup_question_batch_from_qa(
-            role_title=role_title,
-            skills=skills,
-            qa_pairs=qa_pairs,
-            previous_questions=exclude_pool + [i.get("question", "") for i in bank_items],
-            count=refill,
-            difficulty=current_difficulty,
-        )
-        ai_items.extend(refill_ai)
+        refill_ai = []
+        added_refill_ai = 0
         if refill > 0:
+            refill_ai = await generate_followup_question_batch_from_qa(
+                role_title=role_title,
+                skills=skills,
+                qa_pairs=qa_pairs,
+                previous_questions=list(excluded_lower),
+                count=refill,
+                difficulty=current_difficulty,
+            )
             gemini_calls += 1
-        gemini_questions += len(refill_ai)
+        for item in refill_ai:
+            text = (item.get("question") or "").strip()
+            if not text:
+                continue
+            lowered = text.lower()
+            if lowered in excluded_lower:
+                continue
+            ai_items.append(item)
+            added_refill_ai += 1
+            excluded_lower.add(lowered)
+            if len(ai_items) + len(bank_items) >= target:
+                break
+        gemini_questions += added_refill_ai
 
     mixed = (ai_items + bank_items)[:target]
+    if len(mixed) > 1:
+        random.shuffle(mixed)
+
     last_difficulty = mixed[-1].get("difficulty", current_difficulty) if mixed else current_difficulty
     return mixed, last_difficulty, {
         "gemini_calls": gemini_calls,
@@ -530,11 +712,11 @@ async def _start_topic_interview(user_id: str, topic_id: str) -> dict:
         await redis.expire(f"session:{session_id}:pending_questions", SESSION_TTL)
 
     first_q_data = await redis.hgetall(f"session:{session_id}:q:{first_id}")
+    prefetch_targets = []
+    if len(selected) > 1:
+        prefetch_targets.append(selected[1].get("question", ""))
     _schedule_question_audio_prefetch(
-        [
-            first_q_data.get("question", ""),
-            *[q.get("question", "") for q in selected[1:3]],
-        ],
+        prefetch_targets,
         speech_voice_gender,
     )
 
@@ -569,10 +751,14 @@ async def _start_topic_interview(user_id: str, topic_id: str) -> dict:
 
 
 async def _async_pregenerate_next_batch(session_id: str) -> None:
+    db = get_db()
     redis = get_redis()
     try:
         session = await redis.hgetall(f"session:{session_id}")
         if not session or session.get("status") != "in_progress":
+            return
+
+        if session.get("interview_type", "resume") != "resume":
             return
 
         pending_len = await redis.llen(f"session:{session_id}:pending_questions")
@@ -582,21 +768,13 @@ async def _async_pregenerate_next_batch(session_id: str) -> None:
         if pending_len >= PREGEN_MIN_PENDING or generated_count >= max_questions:
             return
 
-        previous_questions = await _get_generated_question_texts(redis, session_id)
-        skills = _safe_json_list(session.get("skills", "[]"))
-        role_title = session.get("role_title", "Software Developer")
-        current_difficulty = session.get("current_difficulty", "medium")
-        local_summary = _LOCAL_SUMMARIES.get(session_id)
-
-        batch, last_difficulty = await _generate_question_batch(
-            role_title=role_title,
-            skills=skills,
-            previous_questions=previous_questions,
+        batch, last_difficulty, batch_metrics = await _generate_mixed_followup_batch(
+            db=db,
+            redis=redis,
+            session_id=session_id,
+            session=session,
             generated_count=generated_count,
             max_questions=max_questions,
-            current_difficulty=current_difficulty,
-            local_summary=local_summary,
-            batch_size=BATCH_SIZE,
         )
         if not batch:
             return
@@ -605,11 +783,38 @@ async def _async_pregenerate_next_batch(session_id: str) -> None:
         if new_ids:
             await redis.rpush(f"session:{session_id}:pending_questions", *new_ids)
             await redis.expire(f"session:{session_id}:pending_questions", SESSION_TTL)
+
+            prefetch_targets = []
+            for qid in new_ids[:2]:
+                q = await redis.hgetall(f"session:{session_id}:q:{qid}")
+                prefetch_targets.append(q.get("question", ""))
+            _schedule_question_audio_prefetch(
+                prefetch_targets,
+                _normalize_voice_gender(session.get("speech_voice_gender")),
+            )
+
             await redis.hset(
                 f"session:{session_id}",
                 mapping={
                     "generated_count": str(generated_count + len(new_ids)),
                     "current_difficulty": last_difficulty,
+                    "metrics_gemini_calls": str(_safe_int(session.get("metrics_gemini_calls", 0)) + batch_metrics.get("gemini_calls", 0)),
+                    "metrics_gemini_questions": str(_safe_int(session.get("metrics_gemini_questions", 0)) + batch_metrics.get("gemini_questions", 0)),
+                    "metrics_bank_questions": str(_safe_int(session.get("metrics_bank_questions", 0)) + batch_metrics.get("bank_questions", 0)),
+                    "metrics_bank_shortfall": str(_safe_int(session.get("metrics_bank_shortfall", 0)) + batch_metrics.get("bank_shortfall", 0)),
+                    "metrics_generation_batches": str(_safe_int(session.get("metrics_generation_batches", 0)) + 1),
+                },
+            )
+            await db[SESSIONS].update_one(
+                {"session_id": session_id},
+                {
+                    "$set": {
+                        "metrics_gemini_calls": _safe_int(session.get("metrics_gemini_calls", 0)) + batch_metrics.get("gemini_calls", 0),
+                        "metrics_gemini_questions": _safe_int(session.get("metrics_gemini_questions", 0)) + batch_metrics.get("gemini_questions", 0),
+                        "metrics_bank_questions": _safe_int(session.get("metrics_bank_questions", 0)) + batch_metrics.get("bank_questions", 0),
+                        "metrics_bank_shortfall": _safe_int(session.get("metrics_bank_shortfall", 0)) + batch_metrics.get("bank_shortfall", 0),
+                        "metrics_generation_batches": _safe_int(session.get("metrics_generation_batches", 0)) + 1,
+                    }
                 },
             )
     finally:
@@ -617,8 +822,8 @@ async def _async_pregenerate_next_batch(session_id: str) -> None:
 
 
 def _schedule_pregen(session_id: str, answered_count: int) -> None:
-    # Start pre-generation after user answers Q1 and Q2, then keep it topped up.
-    if answered_count < 2:
+    # Start pre-generation as soon as Q1 is answered, while user is on Q2.
+    if answered_count < 1:
         return
     if session_id in _PREGEN_IN_FLIGHT:
         return
@@ -656,61 +861,71 @@ async def start_interview(
     user_skills = skills_doc.get("skills", ["general"]) if skills_doc else ["general"]
     user_skills = normalize_skill_list(user_skills)
 
+    if not job_description_id:
+        raise ValueError("Please select a Job Description before starting Resume Interview")
+
     # Get role
     role_title = await _resolve_role_title(db, role_id=role_id, custom_role=custom_role)
-
-    # Compare role requirements with user skills when admin role requirements exist.
-    required_skills = []
-    if role_id and not custom_role:
-        req_cursor = db[ROLE_REQUIREMENTS].find({"role_id": role_id})
-        req_docs = await req_cursor.to_list(length=100)
-        required_skills = [d.get("skill", "") for d in req_docs if d.get("skill")]
-
-    matched_role_skills = find_matching_skills(user_skills, required_skills)
-    missing_role_skills = find_missing_skills(user_skills, required_skills)
 
     selected_jd = None
     if job_description_id:
         selected_jd = await get_job_description_for_user(user_id, job_description_id)
 
-    # Prioritize matched required skills and compress them into cluster-aware focus areas.
-    base_skills_for_interview = matched_role_skills if matched_role_skills else user_skills
+    jd_required_skills = normalize_skill_list((selected_jd or {}).get("required_skills", []))
+    if not jd_required_skills:
+        raise ValueError(
+            "Selected Job Description has no required skills. Add required skills in Settings first."
+        )
+
+    user_skill_set = {s.lower() for s in user_skills}
+    matched_role_skills = [s for s in jd_required_skills if s.lower() in user_skill_set]
+    missing_role_skills = [s for s in jd_required_skills if s.lower() not in user_skill_set]
+    required_skills = list(jd_required_skills)
+
+    # Resume interview scope is strictly JD-required skills.
+    base_skills_for_interview = matched_role_skills + [s for s in missing_role_skills if s not in matched_role_skills]
     skills_for_interview = build_interview_focus_skills(base_skills_for_interview)
     if not skills_for_interview:
-        skills_for_interview = ["general"]
+        skills_for_interview = required_skills
 
-    # First set must come from random DB questions when possible.
+    # Start with two questions ready so Q1 is asked immediately and Q2 is already queued.
     initial_bank = await _fetch_question_bank_batch(
         db=db,
         role_id=role_id,
         excluded_questions=[],
-        limit=BATCH_SIZE,
+        limit=RESUME_INITIAL_BATCH_SIZE,
+        skill_hints=required_skills,
     )
 
-    initial_batch = list(initial_bank)
-    initial_ai_items: list[dict] = []
-    if len(initial_batch) < BATCH_SIZE:
-        ai_count = BATCH_SIZE - len(initial_batch)
-        initial_ai_items, _ = await _generate_question_batch(
+    resume_source_mode = "db" if len(initial_bank) >= RESUME_INITIAL_BATCH_SIZE else "ai"
+
+    if resume_source_mode == "db":
+        initial_batch = list(initial_bank[:RESUME_INITIAL_BATCH_SIZE])
+        initial_gemini_calls = 0
+        initial_gemini_questions = 0
+        initial_bank_questions = len(initial_batch)
+        initial_bank_shortfall = 0
+    else:
+        initial_batch, _ = await _generate_question_batch(
             role_title=role_title,
             skills=skills_for_interview,
-            previous_questions=[q.get("question", "") for q in initial_batch],
+            previous_questions=[],
             generated_count=0,
-            max_questions=MAX_QUESTIONS,
+            max_questions=RESUME_MAX_QUESTIONS,
             current_difficulty="medium",
             local_summary=None,
-            batch_size=ai_count,
+            batch_size=RESUME_INITIAL_BATCH_SIZE,
         )
-        initial_batch.extend(initial_ai_items)
+        if not initial_batch:
+            raise ValueError("Failed to generate initial resume interview questions")
+        initial_gemini_calls = 1
+        initial_gemini_questions = len(initial_batch)
+        initial_bank_questions = 0
+        initial_bank_shortfall = RESUME_INITIAL_BATCH_SIZE
 
     last_difficulty = initial_batch[-1].get("difficulty", "medium") if initial_batch else "medium"
     if not initial_batch:
         raise ValueError("Failed to generate initial interview questions")
-
-    initial_gemini_calls = 1 if initial_ai_items else 0
-    initial_gemini_questions = len(initial_ai_items)
-    initial_bank_questions = len(initial_bank)
-    initial_bank_shortfall = max(0, BATCH_SIZE - len(initial_bank))
 
     session_id = generate_id()
     _LOCAL_SUMMARIES[session_id] = ""
@@ -726,7 +941,7 @@ async def start_interview(
         "status": "in_progress",
         "interview_type": "resume",
         "question_count": 1,
-        "max_questions": MAX_QUESTIONS,
+        "max_questions": RESUME_MAX_QUESTIONS,
         "current_difficulty": initial_batch[0].get("difficulty", "medium"),
         "metrics_gemini_calls": initial_gemini_calls,
         "metrics_gemini_questions": initial_gemini_questions,
@@ -752,11 +967,13 @@ async def start_interview(
         "answered_count": 0,
         "served_count": 1,
         "generated_count": len(initial_batch),
-        "max_questions": MAX_QUESTIONS,
+        "max_questions": RESUME_MAX_QUESTIONS,
         "current_difficulty": last_difficulty,
         "interview_type": "resume",
         "status": "in_progress",
         "speech_voice_gender": speech_voice_gender,
+        "resume_source_mode": resume_source_mode,
+        "jd_required_skills": json.dumps(required_skills),
         "metrics_gemini_calls": initial_gemini_calls,
         "metrics_gemini_questions": initial_gemini_questions,
         "metrics_bank_questions": initial_bank_questions,
@@ -775,11 +992,11 @@ async def start_interview(
         await redis.expire(f"session:{session_id}:pending_questions", SESSION_TTL)
 
     first_q_data = await redis.hgetall(f"session:{session_id}:q:{first_id}")
+    prefetch_targets = []
+    if len(initial_batch) > 1:
+        prefetch_targets.append(initial_batch[1].get("question", ""))
     _schedule_question_audio_prefetch(
-        [
-            first_q_data.get("question", ""),
-            *[item.get("question", "") for item in initial_batch[1:4]],
-        ],
+        prefetch_targets,
         speech_voice_gender,
     )
 
@@ -797,7 +1014,7 @@ async def start_interview(
             "question": first_q_data.get("question", "Tell me about yourself."),
             "difficulty": first_q_data.get("difficulty", "medium"),
             "question_number": 1,
-            "total_questions": MAX_QUESTIONS,
+            "total_questions": RESUME_MAX_QUESTIONS,
         },
         "timer": {
             "enabled": False,
@@ -949,8 +1166,8 @@ async def submit_answer(session_id: str, question_id: str, answer: str) -> dict:
     q_data = await redis.hgetall(f"session:{session_id}:q:{next_question_id}")
     speech_voice_gender = _normalize_voice_gender(session.get("speech_voice_gender"))
 
-    # Prefetch the spoken audio for this question and one-ahead question.
-    prefetch_texts = [q_data.get("question", "")]
+    # Prefetch one-ahead question only. Current question is synthesized by active playback path.
+    prefetch_texts = []
     peek_next_id = await redis.lindex(f"session:{session_id}:pending_questions", 0)
     if peek_next_id:
         peek_q = await redis.hgetall(f"session:{session_id}:q:{peek_next_id}")
@@ -967,6 +1184,9 @@ async def submit_answer(session_id: str, question_id: str, answer: str) -> dict:
         "served_count": str(new_served_count),
         "current_difficulty": next_difficulty,
     })
+
+    if interview_type == "resume":
+        _schedule_pregen(session_id, answered_count)
 
     effective_stats = {
         "gemini_calls": _safe_int(session.get("metrics_gemini_calls", 0)) + metrics_delta["gemini_calls"],
