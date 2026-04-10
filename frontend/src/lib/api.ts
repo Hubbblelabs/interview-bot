@@ -1,4 +1,5 @@
 import axios from "axios";
+import type { AxiosRequestConfig } from "axios";
 import { getToken, logout } from "./auth";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -9,6 +10,48 @@ const api = axios.create({
     "Content-Type": "application/json",
   },
 });
+
+type DedupeGetConfig = AxiosRequestConfig & { skipDedupe?: boolean };
+
+const inFlightGetRequests = new Map<string, Promise<unknown>>();
+
+const stableSerialize = (value: unknown): string => {
+  if (value === null || value === undefined) return "";
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableSerialize(item)).join(",")}]`;
+  }
+  if (typeof value === "object") {
+    const typedValue = value as Record<string, unknown>;
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((key) => `${key}:${stableSerialize(typedValue[key])}`).join(",")}}`;
+  }
+  return String(value);
+};
+
+const buildGetRequestKey = (url: string, config?: DedupeGetConfig): string => {
+  const paramsPart = stableSerialize(config?.params);
+  return `${url}::${paramsPart}`;
+};
+
+const rawGet = api.get.bind(api);
+api.get = ((url: string, config?: DedupeGetConfig) => {
+  if (config?.skipDedupe === true) {
+    return rawGet(url, config);
+  }
+
+  const key = buildGetRequestKey(url, config);
+  const inFlight = inFlightGetRequests.get(key);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const request = (rawGet(url, config) as Promise<unknown>).finally(() => {
+    inFlightGetRequests.delete(key);
+  });
+
+  inFlightGetRequests.set(key, request);
+  return request;
+}) as typeof api.get;
 
 // Request interceptor to add auth token
 api.interceptors.request.use(

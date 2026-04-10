@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
@@ -44,9 +44,25 @@ export default function DashboardPage() {
   const [selectedJdId, setSelectedJdId] = useState("");
   const [loading, setLoading] = useState(true);
   const [isStartingInterview, setIsStartingInterview] = useState(false);
-  const [isVerifyingMatch, setIsVerifyingMatch] = useState(false);
+  const [startInterviewStatus, setStartInterviewStatus] = useState("Preparing your interview session...");
   const [verificationResult, setVerificationResult] = useState<JobDescriptionAlignment | null>(null);
   const [verificationSnapshot, setVerificationSnapshot] = useState<any | null>(null);
+  const [isAutoVerifyingMatch, setIsAutoVerifyingMatch] = useState(false);
+  const verificationRequestRef = useRef<Promise<any | null> | null>(null);
+  const latestVerificationContextRef = useRef("");
+  const didBootstrapRef = useRef(false);
+
+  const getVerificationStorageKey = (userId: string) => `jd-verification-cache:${userId}`;
+
+  const getVerificationComboKey = (jdId: string, resumeUploadedAt: string, jdUpdatedAt: string) =>
+    `${jdId || ""}::${resumeUploadedAt || ""}::${jdUpdatedAt || ""}`;
+
+  const selectedJdUpdatedAt =
+    jobDescriptions.find((jd) => jd.id === selectedJdId)?.updated_at || "";
+  const verificationCacheOwnerId =
+    ((profile as any)?.id as string | undefined) ||
+    ((profile as any)?.user_id as string | undefined) ||
+    "";
 
   const getApiErrorMessage = (err: any, fallbackMessage: string) => {
     const status = err?.response?.status;
@@ -76,6 +92,9 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
+    if (didBootstrapRef.current) return;
+    didBootstrapRef.current = true;
+
     fetchDashboardData();
     void warmupSpeechVoices();
   }, []);
@@ -83,7 +102,7 @@ export default function DashboardPage() {
   useEffect(() => {
     setVerificationResult(null);
     setVerificationSnapshot(null);
-  }, [interviewMode, selectedRoleInput, selectedJdId]);
+  }, [selectedJdId]);
 
   useEffect(() => {
     if (!verificationSnapshot) return;
@@ -94,6 +113,82 @@ export default function DashboardPage() {
       setVerificationSnapshot(null);
     }
   }, [profile?.resume?.uploaded_at, verificationSnapshot]);
+
+  useEffect(() => {
+    latestVerificationContextRef.current = `${interviewMode}::${selectedJdId || ""}::${
+      profile?.resume?.uploaded_at || ""
+    }::${selectedJdUpdatedAt || ""}`;
+  }, [interviewMode, selectedJdId, profile?.resume?.uploaded_at, selectedJdUpdatedAt]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!verificationCacheOwnerId || !selectedJdId || !profile?.resume?.uploaded_at) return;
+    if (verificationSnapshot || verificationResult) return;
+
+    const storageKey = getVerificationStorageKey(verificationCacheOwnerId);
+    const comboKey = getVerificationComboKey(
+      selectedJdId,
+      profile.resume.uploaded_at,
+      selectedJdUpdatedAt
+    );
+
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      const cacheByCombo = parsed?.cacheByCombo || {};
+      const entry = cacheByCombo[comboKey];
+      if (!entry) return;
+      setVerificationResult(entry?.result || null);
+      setVerificationSnapshot(entry?.snapshot || null);
+    } catch {
+      // Ignore malformed local cache.
+    }
+  }, [
+    verificationCacheOwnerId,
+    profile?.resume?.uploaded_at,
+    selectedJdId,
+    selectedJdUpdatedAt,
+    verificationSnapshot,
+    verificationResult,
+  ]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!verificationCacheOwnerId) return;
+
+    const storageKey = getVerificationStorageKey(verificationCacheOwnerId);
+    if (!verificationSnapshot || !verificationResult) {
+      return;
+    }
+
+    const snapshotJdId = verificationSnapshot?.job_description?.id || selectedJdId || "";
+    const snapshotResumeUploadedAt = verificationSnapshot?.resume_snapshot?.uploaded_at || "";
+    const snapshotJdUpdatedAt = verificationSnapshot?.job_description?.updated_at || "";
+    if (!snapshotJdId || !snapshotResumeUploadedAt) {
+      return;
+    }
+
+    const comboKey = getVerificationComboKey(
+      snapshotJdId,
+      snapshotResumeUploadedAt,
+      snapshotJdUpdatedAt
+    );
+
+    try {
+      const raw = localStorage.getItem(storageKey);
+      const parsed = raw ? JSON.parse(raw) : {};
+      const cacheByCombo = parsed?.cacheByCombo || {};
+      cacheByCombo[comboKey] = {
+        snapshot: verificationSnapshot,
+        result: verificationResult,
+        savedAt: verificationSnapshot?.saved_at || new Date().toISOString(),
+      };
+      localStorage.setItem(storageKey, JSON.stringify({ cacheByCombo }));
+    } catch {
+      // Local cache is best-effort only.
+    }
+  }, [verificationCacheOwnerId, selectedJdId, verificationSnapshot, verificationResult]);
 
   const fetchDashboardData = async () => {
     try {
@@ -154,6 +249,61 @@ export default function DashboardPage() {
     return payload;
   };
 
+  const verifyResumeMatchInternal = async ({ silent = false }: { silent?: boolean } = {}) => {
+    if (interviewMode !== "resume") {
+      return null;
+    }
+    if (!profile?.resume || !selectedJdId) {
+      return null;
+    }
+
+    if (verificationRequestRef.current) {
+      return verificationRequestRef.current;
+    }
+
+    const requestContextKey = `${interviewMode}::${selectedJdId}::${
+      profile?.resume?.uploaded_at || ""
+    }::${selectedJdUpdatedAt || ""}`;
+
+    const requestPromise = (async () => {
+      if (silent) {
+        setIsAutoVerifyingMatch(true);
+      }
+
+      try {
+        const payload = buildResumeInterviewPayload();
+        const { data } = await api.post("/interview/verify", payload);
+
+        // Ignore stale response if role/JD/resume changed while request was in flight.
+        if (latestVerificationContextRef.current !== requestContextKey) {
+          return null;
+        }
+
+        setVerificationResult(data?.jd_alignment || null);
+        setVerificationSnapshot(data || null);
+        return data || null;
+      } catch (err: any) {
+        if (silent) {
+          console.warn("Auto verification failed", err);
+        } else {
+          alert(getApiErrorMessage(err, "Failed to verify resume against job description"));
+        }
+        return null;
+      } finally {
+        if (silent) {
+          setIsAutoVerifyingMatch(false);
+        }
+      }
+    })();
+
+    verificationRequestRef.current = requestPromise;
+    try {
+      return await requestPromise;
+    } finally {
+      verificationRequestRef.current = null;
+    }
+  };
+
   const downloadVerificationPdf = async () => {
     if (!verificationSnapshot || !verificationResult) {
       alert("Run Resume vs JD verification first.");
@@ -184,14 +334,22 @@ export default function DashboardPage() {
     };
 
     const addLabelValue = (label: string, value: string) => {
-      ensureSpace(22);
+      const safeText = (value || "-").toString();
+      const labelLines = doc.splitTextToSize(`${label}:`, maxWidth);
+      const valueLines = doc.splitTextToSize(safeText, maxWidth);
+      const blockHeight = labelLines.length * 13 + valueLines.length * 14 + 10;
+
+      ensureSpace(blockHeight + 4);
+
       doc.setFont("helvetica", "bold");
       doc.setFontSize(11);
-      doc.text(`${label}:`, margin, y);
+      doc.text(labelLines, margin, y);
+      y += labelLines.length * 13 + 2;
+
       doc.setFont("helvetica", "normal");
-      const lines = doc.splitTextToSize(value || "-", maxWidth - 90);
-      doc.text(lines, margin + 90, y);
-      y += Math.max(18, lines.length * 14);
+      doc.setFontSize(11);
+      doc.text(valueLines, margin, y);
+      y += valueLines.length * 14 + 8;
     };
 
     const addList = (title: string, items: string[]) => {
@@ -205,10 +363,10 @@ export default function DashboardPage() {
       doc.setFont("helvetica", "normal");
       doc.setFontSize(11);
       values.forEach((item) => {
-        const lines = doc.splitTextToSize(`- ${item}`, maxWidth - 8);
-        ensureSpace(lines.length * 14 + 4);
+        const lines = doc.splitTextToSize(`- ${item}`, maxWidth - 6);
+        ensureSpace(lines.length * 14 + 8);
         doc.text(lines, margin + 6, y);
-        y += lines.length * 14;
+        y += lines.length * 14 + 2;
       });
       y += 6;
     };
@@ -251,37 +409,6 @@ export default function DashboardPage() {
     doc.save(`resume-jd-verification-${stamp}.pdf`);
   };
 
-  const verifyResumeMatch = async () => {
-    if (interviewMode !== "resume") {
-      alert("JD verification is only available for Resume Interview mode.");
-      return;
-    }
-    if (!profile?.resume) {
-      alert("Please upload your resume first.");
-      return;
-    }
-    if (!selectedRoleInput.trim()) {
-      alert("Please select or type a job role before verification.");
-      return;
-    }
-    if (!selectedJdId) {
-      alert("Please select a job description to verify against your resume.");
-      return;
-    }
-
-    setIsVerifyingMatch(true);
-    try {
-      const payload = buildResumeInterviewPayload();
-      const { data } = await api.post("/interview/verify", payload);
-      setVerificationResult(data?.jd_alignment || null);
-      setVerificationSnapshot(data || null);
-    } catch (err: any) {
-      alert(getApiErrorMessage(err, "Failed to verify resume against job description"));
-    } finally {
-      setIsVerifyingMatch(false);
-    }
-  };
-
   const isVerificationFresh = () => {
     if (!verificationResult || !verificationSnapshot) {
       return false;
@@ -298,8 +425,37 @@ export default function DashboardPage() {
       return false;
     }
 
+    const currentJdUpdatedAt =
+      jobDescriptions.find((jd) => jd.id === selectedJdId)?.updated_at || "";
+    const snapshotJdUpdatedAt = verificationSnapshot?.job_description?.updated_at || "";
+    if (currentJdUpdatedAt && currentJdUpdatedAt !== snapshotJdUpdatedAt) {
+      return false;
+    }
+
     return true;
   };
+
+  useEffect(() => {
+    if (interviewMode !== "resume") return;
+    if (!profile?.resume || !selectedJdId) return;
+    if (isStartingInterview || isAutoVerifyingMatch) return;
+    if (isVerificationFresh()) return;
+
+    const timer = setTimeout(() => {
+      void verifyResumeMatchInternal({ silent: true });
+    }, 450);
+
+    return () => clearTimeout(timer);
+  }, [
+    interviewMode,
+    profile?.resume?.uploaded_at,
+    selectedJdId,
+    selectedJdUpdatedAt,
+    isStartingInterview,
+    isAutoVerifyingMatch,
+    verificationSnapshot,
+    verificationResult,
+  ]);
 
   const startInterview = async () => {
     if (interviewMode === "resume" && (!selectedRoleInput.trim() || !profile?.resume)) {
@@ -316,30 +472,34 @@ export default function DashboardPage() {
     }
 
     setIsStartingInterview(true);
-    // Called from button click gesture to improve media autoplay reliability.
-    await unlockSpeechPlayback();
+    setStartInterviewStatus("Checking audio and preparing your interview setup...");
     try {
+      // Called from button click gesture to improve media autoplay reliability.
+      await unlockSpeechPlayback().catch(() => undefined);
+
       const payload: any = {
         interview_type: interviewMode,
       };
       let verifiedAlignment: any = verificationResult;
-      let verifiedSnapshot: any = verificationSnapshot;
 
       if (interviewMode === "topic") {
+        setStartInterviewStatus("Loading selected topic interview...");
         payload.topic_id = selectedTopicId;
       } else {
         // Reuse saved verification unless JD/resume changed.
         if (!isVerificationFresh()) {
-          const verifyPayload = buildResumeInterviewPayload();
-          const verifyRes = await api.post("/interview/verify", verifyPayload);
-          verifiedAlignment = verifyRes.data?.jd_alignment || null;
-          verifiedSnapshot = verifyRes.data || null;
-          setVerificationResult(verifiedAlignment);
-          setVerificationSnapshot(verifiedSnapshot);
+          setStartInterviewStatus("Verifying resume against selected job description...");
+          const verifyData = await verifyResumeMatchInternal({ silent: true });
+          if (!verifyData) {
+            throw new Error("Unable to verify resume against the selected job description");
+          }
+          verifiedAlignment = verifyData?.jd_alignment || null;
         }
+        setStartInterviewStatus("Finalizing resume interview configuration...");
         Object.assign(payload, buildResumeInterviewPayload());
       }
 
+      setStartInterviewStatus("Generating your first question...");
       const { data } = await api.post("/interview/start", payload);
 
       const preferredVoice =
@@ -355,6 +515,7 @@ export default function DashboardPage() {
       });
 
       try {
+        setStartInterviewStatus("Preloading first question audio...");
         await Promise.race([
           prepareSpeech(data?.question?.question || "", {
             voiceGender: preferredVoice,
@@ -379,6 +540,7 @@ export default function DashboardPage() {
           ? `&timerEnabled=1&timerSeconds=${timerSeconds}`
           : "";
 
+      setStartInterviewStatus("Opening interview room...");
       router.push(
         `/interview?session=${data.session_id}&q=${encodeURIComponent(
           data.question.question
@@ -387,9 +549,9 @@ export default function DashboardPage() {
         }&total=${data.question.total_questions || 5}${timerQuery}`
       );
     } catch (err: any) {
-      alert(getApiErrorMessage(err, "Failed to start interview"));
-    } finally {
       setIsStartingInterview(false);
+      setStartInterviewStatus("Preparing your interview session...");
+      alert(getApiErrorMessage(err, "Failed to start interview"));
     }
   };
 
@@ -410,6 +572,20 @@ export default function DashboardPage() {
   return (
     <ProtectedRoute requiredRole="student">
       <Navbar />
+      {isStartingInterview && (
+        <div className="fixed inset-0 z-[70] bg-background/90 backdrop-blur-sm px-4">
+          <div className="w-full h-full flex items-center justify-center">
+            <div className="w-full max-w-lg rounded-2xl border border-border bg-card p-7 text-center shadow-2xl">
+              <Loader2 className="w-10 h-10 animate-spin mx-auto mb-4" />
+              <h2 className="text-2xl font-bold mb-2">Preparing your interview</h2>
+              <p className="text-muted mb-4">{startInterviewStatus}</p>
+              <p className="text-xs text-muted">
+                Please keep this page open while we prepare questions and speech.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
       <main className="pt-20 pb-12 px-4 max-w-7xl mx-auto">
         <div className="animate-fade-in">
           <div className="mb-8">
@@ -448,9 +624,9 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.9fr)_minmax(320px,1fr)] gap-8">
             {/* Left Column */}
-            <div className="lg:col-span-2 space-y-8">
+            <div className="space-y-8">
               {/* Action Banner */}
               {!profile?.resume ? (
                 <div className="p-6 rounded-xl bg-blue-500/10 border border-blue-500/20 flex flex-col sm:flex-row items-center justify-between gap-4">
@@ -472,35 +648,39 @@ export default function DashboardPage() {
                 </div>
               ) : (
                 <div className="p-6 rounded-xl border border-border bg-gradient-to-br from-card to-white/5">
-                  <h2 className="text-xl font-bold mb-2">Ready for a mock interview?</h2>
-                  <p className="text-muted mb-6">
-                    Choose Resume Interview or Topic Interview and start practicing.
-                  </p>
-                  <div className="flex items-center gap-2 mb-4">
-                    <button
-                      onClick={() => setInterviewMode("resume")}
-                      className={`px-3 py-1.5 rounded-lg text-sm border ${
-                        interviewMode === "resume"
-                          ? "bg-black text-white border-black"
-                          : "bg-transparent text-muted border-border"
-                      } cursor-pointer`}
-                    >
-                      Resume Interview
-                    </button>
-                    <button
-                      onClick={() => setInterviewMode("topic")}
-                      className={`px-3 py-1.5 rounded-lg text-sm border ${
-                        interviewMode === "topic"
-                          ? "bg-black text-white border-black"
-                          : "bg-transparent text-muted border-border"
-                      } cursor-pointer`}
-                    >
-                      Topic Interview
-                    </button>
+                  <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
+                    <div>
+                      <h2 className="text-xl font-bold mb-2">Ready for a mock interview?</h2>
+                      <p className="text-muted">
+                        Choose Resume Interview or Topic Interview and start practicing.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setInterviewMode("resume")}
+                        className={`px-3 py-1.5 rounded-lg text-sm border ${
+                          interviewMode === "resume"
+                            ? "bg-black text-white border-black"
+                            : "bg-transparent text-muted border-border"
+                        } cursor-pointer`}
+                      >
+                        Resume Interview
+                      </button>
+                      <button
+                        onClick={() => setInterviewMode("topic")}
+                        className={`px-3 py-1.5 rounded-lg text-sm border ${
+                          interviewMode === "topic"
+                            ? "bg-black text-white border-black"
+                            : "bg-transparent text-muted border-border"
+                        } cursor-pointer`}
+                      >
+                        Topic Interview
+                      </button>
+                    </div>
                   </div>
-                  <div className="flex flex-col sm:flex-row items-start gap-4">
+                  <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_260px] gap-4 items-start">
                     {interviewMode === "resume" ? (
-                      <div className="relative flex-1 w-full space-y-3">
+                      <div className="w-full grid grid-cols-1 md:grid-cols-2 gap-3">
                         <div className="rounded-lg border border-border bg-background/60 p-3">
                           <p className="text-xs uppercase tracking-wide text-muted font-semibold mb-1">
                             Step 1: Choose Interview Role (Required)
@@ -561,7 +741,7 @@ export default function DashboardPage() {
                         </div>
                       </div>
                     ) : (
-                      <div className="flex-1 w-full rounded-lg border border-border bg-background/60 p-3">
+                      <div className="w-full rounded-lg border border-border bg-background/60 p-3">
                         <p className="text-xs uppercase tracking-wide text-muted font-semibold mb-1">
                           Topic Interview
                         </p>
@@ -579,27 +759,15 @@ export default function DashboardPage() {
                         </select>
                       </div>
                     )}
-                    <div className="w-full sm:w-auto flex flex-col sm:flex-row gap-2">
-                      {interviewMode === "resume" && (
-                        <button
-                          onClick={verifyResumeMatch}
-                          disabled={isVerifyingMatch || isStartingInterview || !selectedJdId}
-                          className="w-full sm:w-auto px-5 py-2.5 border border-border hover:border-primary hover:bg-black/5 rounded-lg font-semibold transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
-                        >
-                          {isVerifyingMatch ? (
-                            <>
-                              <Loader2 className="w-4 h-4 animate-spin" />
-                              Verifying...
-                            </>
-                          ) : (
-                            "Verify Resume vs JD"
-                          )}
-                        </button>
-                      )}
+
+                    <div className="w-full rounded-lg border border-border bg-background/60 p-3 space-y-3 xl:sticky xl:top-24">
+                      <p className="text-xs uppercase tracking-wide text-muted font-semibold">
+                        Interview Actions
+                      </p>
                       <button
                         onClick={startInterview}
-                        disabled={isStartingInterview || isVerifyingMatch}
-                        className="w-full sm:w-auto px-6 py-2.5 bg-white text-black hover:bg-gray-100 hover:border-primary border border-transparent rounded-lg font-semibold transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                        disabled={isStartingInterview}
+                        className="w-full px-6 py-2.5 bg-white text-black hover:bg-gray-100 hover:border-primary border border-transparent rounded-lg font-semibold transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                       >
                         {isStartingInterview ? (
                           <>
@@ -613,20 +781,25 @@ export default function DashboardPage() {
                           </>
                         )}
                       </button>
+                      <p className="text-xs text-muted">
+                        {interviewMode === "resume"
+                          ? "Resume vs JD is checked automatically. It refreshes only when resume or JD changes."
+                          : "Start directly to generate a focused topic interview."}
+                      </p>
                     </div>
                   </div>
 
                   {interviewMode === "resume" && selectedJdId && !verificationResult && (
                     <p className="text-xs text-muted mt-3">
-                      Verify first to preview how well your resume matches the selected job description.
+                      Resume vs JD comparison runs automatically and will appear here.
                     </p>
                   )}
 
-                  {(isVerifyingMatch || isStartingInterview) && (
+                  {(isAutoVerifyingMatch || isStartingInterview) && (
                     <p className="text-xs text-muted mt-3">
-                      {isVerifyingMatch
-                        ? "Checking your resume against the selected JD..."
-                        : "Preparing your interview session. Please wait..."}
+                      {isStartingInterview
+                        ? "Preparing your interview session. Please wait..."
+                        : "Auto-checking your resume against the selected JD..."}
                     </p>
                   )}
 
@@ -639,6 +812,7 @@ export default function DashboardPage() {
                           {verificationSnapshot?.saved_at && (
                             <p className="text-xs text-muted mt-1">
                               Saved: {new Date(verificationSnapshot.saved_at).toLocaleString()}
+                              {verificationSnapshot?.cached ? " - using saved comparison" : " - updated now"}
                             </p>
                           )}
                         </div>
@@ -684,53 +858,65 @@ export default function DashboardPage() {
 
             {/* Right Column: History */}
             <div className="space-y-4">
-              <h2 className="font-semibold text-lg flex items-center gap-2">
-                <Clock className="w-5 h-5" />
-                Recent Reports
-              </h2>
-              {history.length === 0 ? (
-                <div className="p-6 rounded-xl border border-border border-dashed text-center">
-                  <p className="text-sm text-muted">No interviews completed yet.</p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {history.slice(0, 5).map((r) => (
-                    <Link
-                      href={`/report/${r.session_id}`}
-                      key={r.session_id}
-                      className="block p-4 rounded-xl bg-card border border-border hover:border-border-light transition-colors group"
-                    >
-                      <div className="flex justify-between items-start mb-2">
-                        <h3 className="font-medium text-sm group-hover:text-white transition-colors truncate pr-4">
-                          {r.role_title || "Mock Interview"}
-                        </h3>
-                        <span
-                          className={`text-sm font-bold shrink-0 ${
-                            r.overall_score >= 70
-                              ? "text-green-400"
-                              : r.overall_score >= 40
-                              ? "text-yellow-400"
-                              : "text-red-400"
-                          }`}
-                        >
-                          {r.overall_score}%
-                        </span>
-                      </div>
-                      <p className="text-xs text-muted">
-                        {new Date(r.completed_at).toLocaleDateString()}
-                      </p>
-                    </Link>
-                  ))}
-                  {history.length > 5 && (
-                    <Link
-                      href="/reports"
-                      className="block text-center text-sm text-muted hover:text-white py-2"
-                    >
-                      View all reports →
-                    </Link>
-                  )}
-                </div>
-              )}
+              <div className="rounded-xl border border-border bg-card p-4">
+                <h2 className="font-semibold text-lg flex items-center gap-2 mb-3">
+                  <Clock className="w-5 h-5" />
+                  Recent Reports
+                </h2>
+                {history.length === 0 ? (
+                  <div className="p-6 rounded-xl border border-border border-dashed text-center">
+                    <p className="text-sm text-muted">No interviews completed yet.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {history.slice(0, 5).map((r) => (
+                      <Link
+                        href={`/report/${r.session_id}`}
+                        key={r.session_id}
+                        className="block p-4 rounded-xl bg-card border border-border hover:border-border-light transition-colors group"
+                      >
+                        <div className="flex justify-between items-start mb-2">
+                          <h3 className="font-medium text-sm group-hover:text-white transition-colors truncate pr-4">
+                            {r.role_title || "Mock Interview"}
+                          </h3>
+                          <span
+                            className={`text-sm font-bold shrink-0 ${
+                              r.overall_score >= 70
+                                ? "text-green-400"
+                                : r.overall_score >= 40
+                                ? "text-yellow-400"
+                                : "text-red-400"
+                            }`}
+                          >
+                            {r.overall_score}%
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted">
+                          {new Date(r.completed_at).toLocaleDateString()}
+                        </p>
+                      </Link>
+                    ))}
+                    {history.length > 5 && (
+                      <Link
+                        href="/reports"
+                        className="block text-center text-sm text-muted hover:text-white py-2"
+                      >
+                        View all reports →
+                      </Link>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-xl border border-border bg-card/60 p-4">
+                <h3 className="font-semibold mb-2">Interview Setup</h3>
+                <p className="text-sm text-muted mb-2">
+                  Resume mode asks JD-scoped questions only. Topic mode focuses on one selected area.
+                </p>
+                <p className="text-xs text-muted">
+                  Tip: Resume-vs-JD comparison runs automatically and updates when JD or resume changes.
+                </p>
+              </div>
             </div>
           </div>
         </div>

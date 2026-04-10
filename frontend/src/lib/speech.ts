@@ -11,6 +11,45 @@ type SpeakOptions = {
   style?: "assistant" | "default";
 };
 
+type SpeechRecognitionAlternativeLike = {
+  transcript: string;
+};
+
+type SpeechRecognitionResultLike = {
+  isFinal: boolean;
+  0: SpeechRecognitionAlternativeLike;
+};
+
+type SpeechRecognitionResultListLike = {
+  length: number;
+  [index: number]: SpeechRecognitionResultLike;
+};
+
+type SpeechRecognitionResultEventLike = {
+  resultIndex: number;
+  results: SpeechRecognitionResultListLike;
+};
+
+type SpeechRecognitionErrorEventLike = {
+  error?: string;
+};
+
+type SpeechRecognitionLike = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: SpeechRecognitionResultEventLike) => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null;
+  onend: (() => void) | null;
+};
+
+type SpeechRecognitionCtorLike = new () => SpeechRecognitionLike;
+
+type SpeechRecognitionWindowLike = Window & {
+  SpeechRecognition?: SpeechRecognitionCtorLike;
+  webkitSpeechRecognition?: SpeechRecognitionCtorLike;
+};
+
 export const isSpeechRecognitionSupported = () => {
   return (
     typeof window !== "undefined" &&
@@ -27,13 +66,25 @@ let currentAudioUrl: string | null = null;
 const backendAudioCache = new Map<string, Blob>();
 const backendAudioInFlight = new Map<string, Promise<Blob>>();
 let audioPlaybackUnlocked = false;
+let speechBackendReady = false;
+let speechBackendWarmupInFlight: Promise<void> | null = null;
+let lastSpeechHealthCheckAt = 0;
+let lastSpeechWarmupAt = 0;
+let bootstrapPrefetchDone = false;
 
 const BACKEND_TTS_TIMEOUT_MS = 90000;
 const BACKEND_CACHE_LIMIT = 40;
 const BACKEND_TTS_RETRIES = 3;
 const ASSISTANT_TTS_SOFT_TIMEOUT_MS = 12000;
+const SPEECH_HEALTH_TTL_MS = 5 * 60 * 1000;
+const SPEECH_WARMUP_TTL_MS = 15 * 60 * 1000;
 const SILENT_WAV_DATA_URI =
   "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=";
+const ENABLE_ASSISTANT_BROWSER_FALLBACK = ["1", "true", "yes", "on"].includes(
+  (process.env.NEXT_PUBLIC_ENABLE_ASSISTANT_BROWSER_TTS_FALLBACK || "")
+    .trim()
+    .toLowerCase()
+);
 
 const normalizeVoiceGender = (value?: SpeechVoiceGender): "male" | "female" => {
   return value === "male" ? "male" : "female";
@@ -41,10 +92,72 @@ const normalizeVoiceGender = (value?: SpeechVoiceGender): "male" | "female" => {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const isRetryableTtsError = (error: any) => {
-  const status = error?.response?.status;
-  const code = error?.code;
-  if ([429, 500, 502, 503, 504].includes(status)) return true;
+const getErrorStatus = (error: unknown): number | undefined => {
+  if (typeof error !== "object" || error === null) {
+    return undefined;
+  }
+
+  const maybeStatus = (error as { response?: { status?: unknown } }).response?.status;
+  return typeof maybeStatus === "number" ? maybeStatus : undefined;
+};
+
+const getErrorCode = (error: unknown): string | undefined => {
+  if (typeof error !== "object" || error === null) {
+    return undefined;
+  }
+
+  const maybeCode = (error as { code?: unknown }).code;
+  return typeof maybeCode === "string" ? maybeCode : undefined;
+};
+
+const ensureSpeechBackendReady = async ({
+  force = false,
+}: {
+  force?: boolean;
+} = {}) => {
+  const now = Date.now();
+  if (!force && speechBackendReady && now - lastSpeechWarmupAt < SPEECH_WARMUP_TTL_MS) {
+    return;
+  }
+
+  if (speechBackendWarmupInFlight) {
+    return await speechBackendWarmupInFlight;
+  }
+
+  const warmupPromise = (async () => {
+    const current = Date.now();
+    if (
+      force ||
+      !lastSpeechHealthCheckAt ||
+      current - lastSpeechHealthCheckAt > SPEECH_HEALTH_TTL_MS ||
+      !speechBackendReady
+    ) {
+      await api.get("/speech/health");
+      lastSpeechHealthCheckAt = Date.now();
+    }
+
+    await api.post("/speech/warmup", {}, { timeout: 90000 });
+    speechBackendReady = true;
+    lastSpeechWarmupAt = Date.now();
+  })();
+
+  speechBackendWarmupInFlight = warmupPromise;
+  try {
+    await warmupPromise;
+  } catch (error) {
+    speechBackendReady = false;
+    throw error;
+  } finally {
+    if (speechBackendWarmupInFlight === warmupPromise) {
+      speechBackendWarmupInFlight = null;
+    }
+  }
+};
+
+const isRetryableTtsError = (error: unknown) => {
+  const status = getErrorStatus(error);
+  const code = getErrorCode(error);
+  if (status !== undefined && [429, 500, 502, 503, 504].includes(status)) return true;
   return code === "ECONNABORTED" || code === "ERR_NETWORK";
 };
 
@@ -124,7 +237,7 @@ const fetchBackendSpeechAudio = async (
   }
 
   const promise = (async () => {
-    let lastError: any = null;
+    let lastError: unknown = null;
     for (let attempt = 0; attempt < BACKEND_TTS_RETRIES; attempt++) {
       try {
         const response = await api.post(
@@ -140,9 +253,18 @@ const fetchBackendSpeechAudio = async (
         );
         const blob = new Blob([response.data], { type: "audio/wav" });
         cacheBackendAudio(cacheKey, blob);
+        speechBackendReady = true;
         return blob;
       } catch (error) {
         lastError = error;
+        const status = getErrorStatus(error);
+        if (status !== undefined && [500, 503].includes(status)) {
+          try {
+            await ensureSpeechBackendReady({ force: true });
+          } catch {
+            // Keep retry loop active even if warmup endpoint is briefly unavailable.
+          }
+        }
         if (attempt >= BACKEND_TTS_RETRIES - 1 || !isRetryableTtsError(error)) {
           throw error;
         }
@@ -249,21 +371,15 @@ const waitForVoices = (timeoutMs = 1200): Promise<SpeechSynthesisVoice[]> => {
 
 export const warmupSpeechVoices = async () => {
   await waitForVoices();
-
-  // Warm up authenticated speech endpoint if available.
   try {
-    await api.get("/speech/health");
-  } catch {
-    // Keep silent: browser fallback still works.
-  }
-
-  // Warmup first, then prefetch once to avoid startup race-related 503 noise.
-  void api
-    .post("/speech/warmup", {}, { timeout: 60000 })
-    .then(() => {
+    await ensureSpeechBackendReady();
+    if (!bootstrapPrefetchDone) {
+      bootstrapPrefetchDone = true;
       prefetchSpeech("Interview starts now.", { voiceGender: "female", style: "assistant" });
-    })
-    .catch(() => undefined);
+    }
+  } catch {
+    // Keep silent: assistant fallback policy decides runtime behavior.
+  }
 };
 
 const resolvePreferredVoice = (voices: SpeechSynthesisVoice[], voiceGender: SpeechVoiceGender) => {
@@ -280,7 +396,12 @@ const resolvePreferredVoice = (voices: SpeechSynthesisVoice[], voiceGender: Spee
   return picked;
 };
 
-const shouldUseBrowserFallback = (_options?: SpeakOptions) => true;
+const shouldUseBrowserFallback = (options?: SpeakOptions) => {
+  if (options?.style === "assistant") {
+    return ENABLE_ASSISTANT_BROWSER_FALLBACK;
+  }
+  return true;
+};
 
 const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -353,6 +474,10 @@ export const speak = (text: string, onEnd?: () => void, options?: SpeakOptions) 
 
   void (async () => {
     try {
+      if (options?.style === "assistant") {
+        await ensureSpeechBackendReady().catch(() => undefined);
+      }
+
       const backendPromise = fetchBackendSpeechAudio(content, backendVoiceGender, options?.style);
       // Avoid unhandled rejection if a soft-timeout fallback path wins first.
       backendPromise.catch(() => undefined);
@@ -403,6 +528,7 @@ export const speak = (text: string, onEnd?: () => void, options?: SpeakOptions) 
       if (shouldUseBrowserFallback(options)) {
         await speakWithBrowserFallback(content, requestId, onEnd, options);
       } else if (onEnd) {
+        console.warn("XTTS playback failed and assistant browser fallback is disabled.");
         onEnd();
       }
     }
@@ -430,7 +556,14 @@ export const createSpeechRecognition = (
   }
 
   const SpeechRecognition =
-    (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    (window as SpeechRecognitionWindowLike).SpeechRecognition ||
+    (window as SpeechRecognitionWindowLike).webkitSpeechRecognition;
+
+  if (!SpeechRecognition) {
+    onError("Speech recognition is not supported in this browser.");
+    return null;
+  }
+
   const recognition = new SpeechRecognition();
 
   recognition.continuous = true;
@@ -439,7 +572,7 @@ export const createSpeechRecognition = (
 
   let finalTranscript = "";
 
-  recognition.onresult = (event: any) => {
+  recognition.onresult = (event) => {
     let interimTranscript = "";
     
     for (let i = event.resultIndex; i < event.results.length; ++i) {
@@ -454,8 +587,8 @@ export const createSpeechRecognition = (
     onResult((finalTranscript + " " + interimTranscript).trim(), finalTranscript.trim());
   };
 
-  recognition.onerror = (event: any) => {
-    onError(event.error);
+  recognition.onerror = (event) => {
+    onError(event.error || "unknown");
   };
 
   recognition.onend = () => {

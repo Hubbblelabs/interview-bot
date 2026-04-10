@@ -76,7 +76,9 @@ function InterviewContent() {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<BlobPart[]>([]);
   const hasSpokenRef = useRef(false);
+  const didInitVoiceRef = useRef(false);
   const preparedQuestionRef = useRef("");
+  const queuedPrefetchedTokenRef = useRef("");
   const currentQuestionToken = `${questionId || ""}::${currentQuestion || ""}`;
   const sttSupported =
     typeof window !== "undefined" &&
@@ -125,6 +127,66 @@ function InterviewContent() {
   }, [currentQuestionToken, voiceReady, voiceGender, isSpeakerEnabled]);
 
   useEffect(() => {
+    if (!sessionId || !voiceReady || !isSpeakerEnabled) return;
+
+    let cancelled = false;
+
+    const prefetchQueuedQuestionAudio = async () => {
+      // Intro step gets more retries because queue seed is async.
+      const attempts = questionNumber <= 1 ? 10 : 4;
+      for (let i = 0; i < attempts; i++) {
+        if (cancelled) return;
+
+        try {
+          const { data } = await api.get(
+            `/interview/next_question?session_id=${encodeURIComponent(sessionId)}`
+          );
+          const preview = data?.next_question || null;
+          const nextText = (preview?.question || "").trim();
+          const nextId = (preview?.question_id || "").trim();
+
+          if (nextText && nextId) {
+            const nextToken = `${nextId}::${nextText}`;
+
+            if (
+              nextToken === currentQuestionToken ||
+              nextToken === preparedQuestionRef.current ||
+              nextToken === queuedPrefetchedTokenRef.current
+            ) {
+              return;
+            }
+
+            await Promise.race([
+              prepareSpeech(nextText, { voiceGender, style: "assistant" }),
+              new Promise((_, reject) =>
+                setTimeout(() => reject(new Error("queued speech prepare timeout")), 20000)
+              ),
+            ]);
+
+            if (!cancelled) {
+              queuedPrefetchedTokenRef.current = nextToken;
+            }
+            return;
+          }
+        } catch {
+          // Keep retrying briefly while queue is still being generated.
+        }
+
+        if (i < attempts - 1) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, questionNumber <= 1 ? 1200 : 1500)
+          );
+        }
+      }
+    };
+
+    void prefetchQueuedQuestionAudio();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, currentQuestionToken, questionNumber, voiceReady, voiceGender, isSpeakerEnabled]);
+
+  useEffect(() => {
     return () => {
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
         mediaRecorderRef.current.stop();
@@ -137,25 +199,31 @@ function InterviewContent() {
   }, []);
 
   useEffect(() => {
+    if (didInitVoiceRef.current) return;
+    didInitVoiceRef.current = true;
+
     const localVoice = localStorage.getItem("speech_voice_gender") as SpeechVoiceGender | null;
-    if (localVoice === "male" || localVoice === "female" || localVoice === "auto") {
+    const hasLocalVoice = localVoice === "male" || localVoice === "female" || localVoice === "auto";
+    if (hasLocalVoice) {
       setVoiceGender(localVoice);
     }
 
     const loadVoiceFromProfile = async () => {
-      try {
-        const { data } = await api.get("/profile");
-        const serverVoice = (data?.speech_settings?.voice_gender || localVoice || "female") as SpeechVoiceGender;
-        if (serverVoice === "male" || serverVoice === "female" || serverVoice === "auto") {
-          setVoiceGender(serverVoice);
-          localStorage.setItem("speech_voice_gender", serverVoice);
+      if (!hasLocalVoice) {
+        try {
+          const { data } = await api.get("/profile");
+          const serverVoice = (data?.speech_settings?.voice_gender || localVoice || "female") as SpeechVoiceGender;
+          if (serverVoice === "male" || serverVoice === "female" || serverVoice === "auto") {
+            setVoiceGender(serverVoice);
+            localStorage.setItem("speech_voice_gender", serverVoice);
+          }
+        } catch {
+          // Keep local/default voice if profile fetch fails.
         }
-      } catch {
-        // Keep local/default voice if profile fetch fails.
-      } finally {
-        await warmupSpeechVoices();
-        setVoiceReady(true);
       }
+
+      await warmupSpeechVoices();
+      setVoiceReady(true);
     };
 
     loadVoiceFromProfile();
@@ -347,10 +415,11 @@ function InterviewContent() {
         setIsComplete(true);
       } else if (data.next_question) {
         const nextQuestionText = data.next_question.question || "";
+        const nextQuestionToken = `${data.next_question.question_id || ""}::${nextQuestionText}`;
         preparedQuestionRef.current = "";
         void prepareSpeech(nextQuestionText, { voiceGender, style: "assistant" })
           .then(() => {
-            preparedQuestionRef.current = nextQuestionText;
+            preparedQuestionRef.current = nextQuestionToken;
           })
           .catch(() => {
             preparedQuestionRef.current = "";
