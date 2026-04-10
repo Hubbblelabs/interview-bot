@@ -102,6 +102,10 @@ async def generate_report(session_id: str, user_id: str) -> dict:
         f"session:{session_id}",
         f"session:{session_id}:questions",
         f"session:{session_id}:pending_questions",
+        f"session:{session_id}:question_queue",
+        f"session:{session_id}:question_backlog",
+        f"session:{session_id}:context_cache",
+        f"session:{session_id}:asked_questions_set",
         f"session:{session_id}:answers",
     ]
     for qid in question_ids:

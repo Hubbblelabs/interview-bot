@@ -3,8 +3,11 @@ from config import get_settings
 from utils.skills import normalize_skill_list
 import asyncio
 import json
+import random
 import re
+from time import perf_counter
 from langchain_core.prompts import PromptTemplate
+from services.latency_service import record_latency
 
 settings = get_settings()
 
@@ -25,30 +28,52 @@ def _is_transient_gemini_error(error: Exception) -> bool:
     return any(marker in message for marker in transient_markers)
 
 
-async def call_gemini(prompt: str, system_instruction: str = None) -> str:
+async def call_gemini(
+    prompt: str,
+    system_instruction: str = None,
+    *,
+    max_attempts: int = 3,
+    request_timeout_seconds: float | None = None,
+) -> str:
     """Call Gemini API with a prompt and optional system instruction."""
+    started_at = perf_counter()
     config = {}
     if system_instruction:
         config["system_instruction"] = system_instruction
     config["response_mime_type"] = "application/json"
 
     last_error = None
-    max_attempts = 3
-    for attempt in range(max_attempts):
+
+    attempts = max(1, int(max_attempts or 1))
+    for attempt in range(attempts):
         try:
-            response = client.models.generate_content(
-                model=settings.GEMINI_MODEL,
-                contents=prompt,
-                config=config if config else None,
-            )
+            def _invoke():
+                return client.models.generate_content(
+                    model=settings.GEMINI_MODEL,
+                    contents=prompt,
+                    config=config if config else None,
+                )
+
+            if request_timeout_seconds and request_timeout_seconds > 0:
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(_invoke),
+                    timeout=request_timeout_seconds,
+                )
+            else:
+                response = await asyncio.to_thread(_invoke)
+
+            elapsed_ms = (perf_counter() - started_at) * 1000.0
+            await record_latency("gemini_ms", elapsed_ms)
             return (response.text or "").strip()
         except Exception as exc:
             last_error = exc
-            if _is_transient_gemini_error(exc) and attempt < max_attempts - 1:
+            if _is_transient_gemini_error(exc) and attempt < attempts - 1:
                 await asyncio.sleep(0.8 * (attempt + 1))
                 continue
             break
 
+    elapsed_ms = (perf_counter() - started_at) * 1000.0
+    await record_latency("gemini_ms", elapsed_ms)
     raise RuntimeError(f"Gemini request failed: {last_error}")
 
 
@@ -66,6 +91,25 @@ def _extract_json_object(text: str) -> str:
     # Fallback when model wraps JSON with extra text.
     start = value.find("{")
     end = value.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return value[start:end + 1]
+
+    return value
+
+
+def _extract_json_array(text: str) -> str:
+    value = (text or "").strip()
+    if value.startswith("```"):
+        value = value.split("\n", 1)[1]
+    if value.endswith("```"):
+        value = value.rsplit("```", 1)[0]
+    value = value.strip()
+
+    if value.startswith("[") and value.endswith("]"):
+        return value
+
+    start = value.find("[")
+    end = value.rfind("]")
     if start != -1 and end != -1 and end > start:
         return value[start:end + 1]
 
@@ -386,7 +430,7 @@ Return ONLY JSON, no markdown."""
     prompt = prompt_template.format(context=context, count=count)
 
     try:
-        result = (await call_gemini(prompt)).strip()
+        result = _extract_json_array((await call_gemini(prompt)).strip())
         data = json.loads(result)
         if not isinstance(data, list):
             raise ValueError("Batch response is not a list")
@@ -421,6 +465,140 @@ Return ONLY JSON, no markdown."""
                     "question": f"Tell me about your experience with {skills[0] if skills else 'software development'}.",
                     "difficulty": spec["difficulty"],
                     "category": "general",
+                }
+            )
+        return fallback
+
+
+async def generate_realtime_technical_round(
+    role_title: str,
+    resume_skills: list,
+    resume_summary: str,
+    jd_title: str,
+    jd_description: str,
+    jd_required_skills: list,
+    previous_questions: list,
+    count: int = 10,
+) -> list:
+    """Generate a full interview round plan from opening to closing using resume + JD context."""
+    count = max(1, int(count or 10))
+    skills = normalize_skill_list(resume_skills or [])
+    jd_skills = normalize_skill_list(jd_required_skills or [])
+
+    # Use small randomness to avoid deterministic opening phrasing across attempts.
+    variation_seed = random.randint(1000, 9999)
+
+    payload = {
+        "role_title": role_title,
+        "resume_skills": skills,
+        "resume_summary": resume_summary,
+        "jd_title": jd_title,
+        "jd_description": jd_description,
+        "jd_required_skills": jd_skills,
+        "previous_questions": previous_questions[-30:] if previous_questions else [],
+        "count": count,
+        "variation_seed": variation_seed,
+    }
+
+    prompt_template = PromptTemplate.from_template(
+        """You are an expert interviewer creating a realistic technical interview round.
+
+Input JSON:
+{payload}
+
+Task:
+Generate exactly {count} questions in sequence, simulating one real-time technical round from opening to wrap-up.
+
+Required flow:
+1) Opening/warm-up that is specific to the candidate profile and role.
+2) Resume-linked experience probe.
+3-7) Deep technical questions grounded in JD-required skills.
+8) Debugging/failure-mode question.
+9) Design/trade-off/decision-making question.
+10) Final reflective closing question.
+
+Strict rules:
+1. Ask ONLY within JD required skills and role scope.
+2. Use resume context to personalize wording and sequencing.
+3. Do NOT repeat or closely paraphrase any question in previous_questions.
+4. If previous_questions already include a generic "introduce yourself" opener, do not use that opener again.
+5. Keep wording concise and interview-ready.
+
+Return ONLY valid JSON array with objects:
+- "question": string
+- "difficulty": "easy" | "medium" | "hard"
+- "category": string
+
+No markdown, no extra text."""
+    )
+
+    prompt = prompt_template.format(payload=json.dumps(payload, ensure_ascii=True), count=count)
+
+    try:
+        result = _extract_json_array((await call_gemini(prompt)).strip())
+        data = json.loads(result)
+        if not isinstance(data, list):
+            raise ValueError("Realtime round response is not a list")
+
+        normalized = []
+        for i, item in enumerate(data[:count]):
+            if not isinstance(item, dict):
+                item = {}
+
+            if i <= 1:
+                fallback_difficulty = "easy"
+            elif i <= 6:
+                fallback_difficulty = "medium"
+            else:
+                fallback_difficulty = "hard"
+
+            normalized.append(
+                {
+                    "question": item.get("question") or f"Explain your approach to {jd_skills[0] if jd_skills else (skills[0] if skills else 'this role expectation')}",
+                    "difficulty": item.get("difficulty") if item.get("difficulty") in {"easy", "medium", "hard"} else fallback_difficulty,
+                    "category": item.get("category") or "technical-round",
+                }
+            )
+
+        while len(normalized) < count:
+            idx = len(normalized)
+            if idx == 0:
+                fallback_q = "Walk me through your background and the projects most relevant to this role."
+            elif idx == count - 1:
+                fallback_q = "If you had one week to improve your readiness for this role, what would you focus on and why?"
+            else:
+                target_skill = jd_skills[idx % len(jd_skills)] if jd_skills else (skills[idx % len(skills)] if skills else "this requirement")
+                fallback_q = f"How would you handle a practical scenario involving {target_skill}?"
+
+            normalized.append(
+                {
+                    "question": fallback_q,
+                    "difficulty": "easy" if idx <= 1 else ("medium" if idx <= 6 else "hard"),
+                    "category": "technical-round",
+                }
+            )
+
+        return normalized[:count]
+    except Exception:
+        fallback = []
+        skill_pool = jd_skills or skills or ["core technical concepts"]
+        for idx in range(count):
+            if idx == 0:
+                text = "Walk me through your background and the most role-relevant work you have done."
+            elif idx == 1:
+                text = "Pick one project from your resume and explain your exact responsibilities and impact."
+            elif idx == count - 2:
+                text = "Describe a difficult production issue you would debug for this role and your step-by-step approach."
+            elif idx == count - 1:
+                text = "What is one technical area you would improve next for this job, and what is your plan?"
+            else:
+                text = f"How would you solve a realistic problem involving {skill_pool[idx % len(skill_pool)]}?"
+
+            fallback.append(
+                {
+                    "question": text,
+                    "difficulty": "easy" if idx <= 1 else ("medium" if idx <= 6 else "hard"),
+                    "category": "technical-round",
                 }
             )
         return fallback

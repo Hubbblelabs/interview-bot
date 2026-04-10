@@ -3,17 +3,20 @@ import os
 import tempfile
 from typing import Tuple
 from collections import OrderedDict
+from functools import wraps
 
 _MODEL_CACHE = {}
 _MODEL_LOCK = asyncio.Lock()
 _AUDIO_CACHE = OrderedDict()
 _AUDIO_CACHE_LOCK = asyncio.Lock()
 _SYNTHESIZE_LOCK = asyncio.Lock()
+_TORCH_LOAD_PATCHED = False
 
 XTTS_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
 XTTS_LANGUAGE = "en"
 XTTS_SPEED = 1.2
 _XTTS_WARM = False
+_XTTS_LAST_ERROR: str | None = None
 AUDIO_CACHE_MAX_ITEMS = 300
 
 
@@ -37,6 +40,37 @@ XTTS_SPEAKER_BY_GENDER = {
 }
 
 
+def _resolve_xtts_checkpoint_trust() -> bool:
+    """Enable trusted local checkpoint loading compatibility by default."""
+    value = os.getenv("XTTS_TRUSTED_CHECKPOINTS", "1").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _ensure_torch_load_compat_for_xtts() -> None:
+    """Patch torch.load default for PyTorch 2.6+ when loading trusted XTTS checkpoints."""
+    global _TORCH_LOAD_PATCHED
+    if _TORCH_LOAD_PATCHED or not _resolve_xtts_checkpoint_trust():
+        return
+
+    try:
+        import torch
+    except Exception:
+        return
+
+    original_load = getattr(torch, "load", None)
+    if not callable(original_load):
+        return
+
+    @wraps(original_load)
+    def _torch_load_compat(*args, **kwargs):
+        # Coqui XTTS checkpoints require full object unpickling on newer PyTorch.
+        kwargs.setdefault("weights_only", False)
+        return original_load(*args, **kwargs)
+
+    torch.load = _torch_load_compat
+    _TORCH_LOAD_PATCHED = True
+
+
 def _select_model(voice_gender: str) -> Tuple[str, str | None]:
     gender = (voice_gender or "female").strip().lower()
     if gender == "male":
@@ -52,6 +86,8 @@ async def _get_tts_model(model_name: str):
             return _MODEL_CACHE[model_name]
 
         def _load_model():
+            _ensure_torch_load_compat_for_xtts()
+
             try:
                 from TTS.api import TTS
             except Exception as exc:
@@ -73,14 +109,26 @@ async def _get_tts_model(model_name: str):
                 except Exception:
                     use_gpu = False
 
+            # TTS(..., gpu=...) is deprecated upstream. Load once, then move model.
+            tts = TTS(model_name=model_name, progress_bar=False)
+
             if use_gpu:
                 try:
-                    return TTS(model_name=model_name, progress_bar=False, gpu=True)
+                    tts.to("cuda")
+                    return tts
                 except Exception:
                     # Graceful CPU fallback when CUDA runtime is unavailable/mismatched.
-                    return TTS(model_name=model_name, progress_bar=False, gpu=False)
+                    try:
+                        tts.to("cpu")
+                    except Exception:
+                        pass
+                    return tts
 
-            return TTS(model_name=model_name, progress_bar=False, gpu=False)
+            try:
+                tts.to("cpu")
+            except Exception:
+                pass
+            return tts
 
         model = await asyncio.to_thread(_load_model)
         _MODEL_CACHE[model_name] = model
@@ -110,17 +158,27 @@ def _normalize_text_for_speech(value: str, max_length: int = XTTS_MAX_TEXT_LENGT
     return trimmed
 
 
-async def warmup_xtts_model() -> None:
+async def warmup_xtts_model() -> bool:
     """Preload XTTS to avoid long cold-start on first interview question."""
-    global _XTTS_WARM
+    global _XTTS_WARM, _XTTS_LAST_ERROR
     if _XTTS_WARM:
-        return
+        return True
     try:
         await _get_tts_model(XTTS_MODEL)
         _XTTS_WARM = True
-    except Exception:
-        # Keep API startup resilient; synthesis route still has fallbacks.
-        pass
+        _XTTS_LAST_ERROR = None
+        return True
+    except Exception as exc:
+        # Keep API startup resilient; routes decide whether to surface this.
+        _XTTS_LAST_ERROR = str(exc)
+        return False
+
+
+def get_xtts_warmup_state() -> dict:
+    return {
+        "is_warm": _XTTS_WARM,
+        "last_error": _XTTS_LAST_ERROR,
+    }
 
 
 def _synthesize_xtts_to_file(tts, text: str, speaker: str, file_path: str) -> None:

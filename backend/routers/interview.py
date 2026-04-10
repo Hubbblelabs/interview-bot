@@ -12,9 +12,11 @@ from services.interview_service import (
     start_interview,
     verify_resume_job_description,
     submit_answer,
+    get_next_question,
     quit_interview,
 )
 from services.evaluation_service import generate_report
+from services.latency_service import get_latency_metrics, reset_latency_metrics
 
 router = APIRouter()
 
@@ -25,6 +27,28 @@ async def start_interview_endpoint(
     current_user: dict = Depends(get_current_user),
 ):
     """Start a new interview session."""
+    try:
+        result = await start_interview(
+            user_id=current_user["user_id"],
+            role_id=request.role_id,
+            custom_role=request.custom_role,
+            interview_type=request.interview_type,
+            topic_id=request.topic_id,
+            job_description_id=request.job_description_id,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/start_interview")
+async def start_interview_compat_endpoint(
+    request: StartInterviewRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Compatibility endpoint aligned with alternate API naming."""
     try:
         result = await start_interview(
             user_id=current_user["user_id"],
@@ -80,6 +104,43 @@ async def submit_answer_endpoint(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/submit_answer")
+async def submit_answer_compat_endpoint(
+    request: SubmitAnswerRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Compatibility endpoint aligned with alternate API naming."""
+    try:
+        result = await submit_answer(
+            session_id=request.session_id,
+            question_id=request.question_id,
+            answer=request.answer,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/next_question")
+async def get_next_question_endpoint(
+    session_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Preview next queued question without modifying answer state."""
+    try:
+        result = await get_next_question(
+            session_id=session_id,
+            user_id=current_user["user_id"],
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/quit")
 async def quit_interview_endpoint(
     request: QuitInterviewRequest,
@@ -109,6 +170,25 @@ async def quit_interview_endpoint(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/latency")
+async def interview_latency_metrics(
+    sample_size: int = 500,
+    current_user: dict = Depends(get_current_user),
+):
+    """Get STT/submit/Gemini latency metrics with p50 and p95."""
+    _ = current_user
+    return await get_latency_metrics(sample_size=sample_size)
+
+
+@router.post("/latency/reset")
+async def reset_interview_latency_metrics(
+    current_user: dict = Depends(get_current_user),
+):
+    """Reset latency metric samples to start a fresh before/after comparison."""
+    _ = current_user
+    return await reset_latency_metrics()
 
 
 @router.get("/report")

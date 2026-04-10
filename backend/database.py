@@ -27,7 +27,10 @@ async def connect_db():
     await db.sessions.create_index("user_id")
     await db.results.create_index("session_id")
     await db.results.create_index("user_id")
+    await db.answers.create_index("user_id")
+    await db.answers.create_index("session_id")
     await db.questions.create_index("role_id")
+    await db.jd_verifications.create_index([("user_id", 1), ("cache_key", 1)])
 
     # Redis
     redis_client = aioredis.from_url(
