@@ -370,7 +370,7 @@ function InterviewContent() {
           finally { setIsQuitting(false); }
         }
       },
-      cancel: { label: "Cancel" },
+      cancel: { label: "Cancel", onClick: () => {} },
       duration: 10000,
     });
   };

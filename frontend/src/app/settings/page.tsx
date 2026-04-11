@@ -180,7 +180,7 @@ export default function SettingsPage() {
           }
         }
       },
-      cancel: { label: "Cancel" }
+      cancel: { label: "Cancel", onClick: () => {} }
     });
   };
 

@@ -103,7 +103,7 @@ export default function AdminJobDescriptionsPage() {
           }
         }
       },
-      cancel: { label: "Cancel" }
+      cancel: { label: "Cancel", onClick: () => {} }
     });
   };
 
