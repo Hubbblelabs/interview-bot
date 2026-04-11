@@ -16,6 +16,7 @@ import {
   Briefcase,
   ChevronLeft,
   ChevronRight,
+  Bot,
 } from "lucide-react";
 import { getUser, logout } from "@/lib/auth";
 import { User } from "@/types";
@@ -159,7 +160,8 @@ export default function Navbar() {
           </Link>
 
           <div className="flex items-center gap-1">
-            <NavLink href="/dashboard" icon={UserIcon} label="Dashboard" />
+            <NavLink href="/dashboard" icon={UserIcon} label="Overview" />
+            <NavLink href="/bots-help" icon={Bot} label="Bot's Help" />
             <NavLink href="/reports" icon={BarChart3} label="Reports" />
             <NavLink href="/settings" icon={Settings} label="Settings" />
           </div>

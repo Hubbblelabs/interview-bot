@@ -6,6 +6,7 @@ import ProtectedRoute from "@/components/ProtectedRoute";
 import api from "@/lib/api";
 import { Topic, QuestionLite } from "@/types";
 import { Send, CheckCircle2, XCircle } from "lucide-react";
+import { toast } from "sonner";
 
 export default function AdminInterviewsPage() {
   const [topics, setTopics] = useState<Topic[]>([]);
@@ -67,7 +68,7 @@ export default function AdminInterviewsPage() {
       const timerMinutes = Number(timerMinutesByTopic[topicId] || "0");
 
       if (isPublished && timerEnabled && (!Number.isFinite(timerMinutes) || timerMinutes <= 0)) {
-        alert("Please enter a valid timer in minutes before publishing.");
+        toast.error("Please enter a valid timer in minutes before publishing.");
         setUpdatingTopicId(null);
         return;
       }
@@ -97,7 +98,7 @@ export default function AdminInterviewsPage() {
         )
       );
     } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to update publish status");
+      toast.error(err.response?.data?.detail || "Failed to update publish status");
     } finally {
       setUpdatingTopicId(null);
     }

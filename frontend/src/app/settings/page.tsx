@@ -8,6 +8,7 @@ import { Profile, JobDescription } from "@/types";
 import { SpeechVoiceGender } from "@/lib/speech";
 import { Settings, Upload, User, Zap, CheckCircle, Loader2 } from "lucide-react";
 import { PageSkeleton } from "@/components/Skeleton";
+import { toast } from "sonner";
 
 export default function SettingsPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -92,7 +93,7 @@ export default function SettingsPage() {
           : prev
       );
     } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to save voice setting");
+      toast.error(err.response?.data?.detail || "Failed to save voice setting");
     } finally {
       setSavingVoice(false);
     }
@@ -132,7 +133,7 @@ export default function SettingsPage() {
 
   const saveJobDescription = async () => {
     if (!jdForm.title.trim() || !jdForm.description.trim()) {
-      alert("Title and description are required");
+      toast.error("Title and description are required");
       return;
     }
     setSavingJd(true);
@@ -156,24 +157,31 @@ export default function SettingsPage() {
       resetJdForm();
       fetchJobDescriptions();
     } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to save job description");
+      toast.error(err.response?.data?.detail || "Failed to save job description");
     } finally {
       setSavingJd(false);
     }
   };
 
   const deleteJobDescription = async (id: string) => {
-    const confirmed = window.confirm("Delete this job description?");
-    if (!confirmed) return;
-    try {
-      await api.delete(`/profile/job-descriptions/${id}`);
-      if (editingJdId === id) {
-        resetJdForm();
-      }
-      fetchJobDescriptions();
-    } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to delete job description");
-    }
+    toast("Delete this job description?", {
+      description: "This action cannot be undone.",
+      action: {
+        label: "Delete",
+        onClick: async () => {
+          try {
+            await api.delete(`/profile/job-descriptions/${id}`);
+            if (editingJdId === id) {
+              resetJdForm();
+            }
+            fetchJobDescriptions();
+          } catch (err: any) {
+            toast.error(err.response?.data?.detail || "Failed to delete job description");
+          }
+        }
+      },
+      cancel: { label: "Cancel" }
+    });
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -193,7 +201,7 @@ export default function SettingsPage() {
       setUploadSuccess(true);
       fetchProfile();
     } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to upload resume");
+      toast.error(err.response?.data?.detail || "Failed to upload resume");
     } finally {
       setUploading(false);
     }
@@ -221,7 +229,7 @@ export default function SettingsPage() {
       setProfile(prev => prev ? { ...prev, skills: editableSkills } : null);
       setIsEditingSkills(false);
     } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to update skills");
+      toast.error(err.response?.data?.detail || "Failed to update skills");
     } finally {
       setSavingSkills(false);
     }
@@ -250,7 +258,7 @@ export default function SettingsPage() {
       });
       setIsEditingData(false);
     } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to update resume details");
+      toast.error(err.response?.data?.detail || "Failed to update resume details");
     } finally {
       setSavingData(false);
     }

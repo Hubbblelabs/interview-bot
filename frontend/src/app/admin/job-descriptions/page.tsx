@@ -6,6 +6,7 @@ import ProtectedRoute from "@/components/ProtectedRoute";
 import api from "@/lib/api";
 import { JobDescription } from "@/types";
 import { Briefcase, Loader2, Plus } from "lucide-react";
+import { toast } from "sonner";
 
 export default function AdminJobDescriptionsPage() {
   const [items, setItems] = useState<JobDescription[]>([]);
@@ -46,7 +47,7 @@ export default function AdminJobDescriptionsPage() {
 
   const saveItem = async () => {
     if (!form.title.trim() || !form.description.trim()) {
-      alert("Title and description are required");
+      toast.error("Title and description are required");
       return;
     }
 
@@ -71,7 +72,7 @@ export default function AdminJobDescriptionsPage() {
       resetForm();
       fetchItems();
     } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to save job description");
+      toast.error(err.response?.data?.detail || "Failed to save job description");
     } finally {
       setSaving(false);
     }
@@ -88,16 +89,22 @@ export default function AdminJobDescriptionsPage() {
   };
 
   const deleteItem = async (id: string) => {
-    const confirmed = window.confirm("Delete this job description?");
-    if (!confirmed) return;
-
-    try {
-      await api.delete(`/admin/job-descriptions/${id}`);
-      if (editingId === id) resetForm();
-      fetchItems();
-    } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to delete job description");
-    }
+    toast("Delete this job description?", {
+      description: "This action cannot be undone.",
+      action: {
+        label: "Delete",
+        onClick: async () => {
+          try {
+            await api.delete(`/admin/job-descriptions/${id}`);
+            if (editingId === id) resetForm();
+            fetchItems();
+          } catch (err: any) {
+            toast.error(err.response?.data?.detail || "Failed to delete job description");
+          }
+        }
+      },
+      cancel: { label: "Cancel" }
+    });
   };
 
   return (

@@ -7,6 +7,7 @@ import ProtectedRoute from "@/components/ProtectedRoute";
 import api from "@/lib/api";
 import { AdminQuestion, Topic } from "@/types";
 import { FileText, Filter, Pencil, Trash2, Plus, Tags } from "lucide-react";
+import { toast } from "sonner";
 
 export default function AdminQuestionsPage() {
   const [questions, setQuestions] = useState<AdminQuestion[]>([]);
@@ -80,7 +81,7 @@ export default function AdminQuestionsPage() {
       await api.delete(`/admin/questions/${id}`);
       await fetchQuestions(filterTopic, difficultyFilter);
     } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to delete question");
+      toast.error(err.response?.data?.detail || "Failed to delete question");
     }
   };
 

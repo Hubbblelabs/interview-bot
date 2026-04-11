@@ -8,6 +8,7 @@ import ProtectedRoute from "@/components/ProtectedRoute";
 import api from "@/lib/api";
 import { Topic, EntryMode, Difficulty } from "@/types";
 import { ArrowLeft, BookOpen, Upload, Sparkles } from "lucide-react";
+import { toast } from "sonner";
 
 export default function AdminCreateQuestionPage() {
   const router = useRouter();
@@ -48,7 +49,7 @@ export default function AdminCreateQuestionPage() {
   const createManualQuestion = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!topicId) {
-      alert("Please select a topic");
+      toast.error("Please select a topic");
       return;
     }
 
@@ -62,7 +63,7 @@ export default function AdminCreateQuestionPage() {
       });
       router.push("/admin/questions");
     } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to create question");
+      toast.error(err.response?.data?.detail || "Failed to create question");
     } finally {
       setSaving(false);
     }
@@ -71,11 +72,11 @@ export default function AdminCreateQuestionPage() {
   const importFromPdf = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!uploadTopicId) {
-      alert("Please select a topic");
+      toast.error("Please select a topic");
       return;
     }
     if (!uploadFile) {
-      alert("Please choose a PDF file");
+      toast.error("Please choose a PDF file");
       return;
     }
 
@@ -90,10 +91,10 @@ export default function AdminCreateQuestionPage() {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
-      alert(`Imported ${data.inserted_count} questions successfully`);
+      toast.success(`Imported ${data.inserted_count} questions successfully`);
       router.push("/admin/questions");
     } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to import questions from PDF");
+      toast.error(err.response?.data?.detail || "Failed to import questions from PDF");
     } finally {
       setUploading(false);
     }

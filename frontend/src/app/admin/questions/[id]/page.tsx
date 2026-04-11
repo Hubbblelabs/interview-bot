@@ -8,6 +8,7 @@ import ProtectedRoute from "@/components/ProtectedRoute";
 import api from "@/lib/api";
 import { Topic } from "@/types";
 import { ArrowLeft, Save, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 
 type Difficulty = "easy" | "medium" | "hard";
 
@@ -45,7 +46,7 @@ export default function AdminEditQuestionPage() {
       setQuestion(String(q?.question || ""));
       setDifficulty((q?.difficulty || "medium") as Difficulty);
     } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to load question");
+      toast.error(err.response?.data?.detail || "Failed to load question");
       router.push("/admin/questions");
     } finally {
       setLoading(false);
@@ -55,7 +56,7 @@ export default function AdminEditQuestionPage() {
   const updateQuestion = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!topicId) {
-      alert("Please select a topic");
+      toast.error("Please select a topic");
       return;
     }
 
@@ -68,7 +69,7 @@ export default function AdminEditQuestionPage() {
       });
       router.push("/admin/questions");
     } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to update question");
+      toast.error(err.response?.data?.detail || "Failed to update question");
     } finally {
       setSaving(false);
     }
@@ -81,7 +82,7 @@ export default function AdminEditQuestionPage() {
       await api.delete(`/admin/questions/${questionId}`);
       router.push("/admin/questions");
     } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to delete question");
+      toast.error(err.response?.data?.detail || "Failed to delete question");
       setDeleting(false);
     }
   };
