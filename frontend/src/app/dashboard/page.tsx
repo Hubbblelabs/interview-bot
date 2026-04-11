@@ -28,8 +28,231 @@ import {
   ChevronRight,
   Loader2,
   Download,
+  X,
+  Bot,
+  Trophy,
+  TrendingUp,
+  Target,
+  CheckCircle2,
+  XCircle,
+  Lightbulb,
+  Upload,
+  User,
+  Mail,
+  Star,
+  Play,
+  BookOpen,
 } from "lucide-react";
 import { PageSkeleton } from "@/components/Skeleton";
+import { toast } from "sonner";
+
+// ── Start Interview Modal ────────────────────────────────────────────────────
+
+interface StartInterviewModalProps {
+  open: boolean;
+  onClose: () => void;
+  profile: Profile | null;
+  roles: JobRole[];
+  topics: Topic[];
+  jobDescriptions: JobDescription[];
+  selectedRoleInput: string;
+  setSelectedRoleInput: (v: string) => void;
+  interviewMode: "resume" | "topic";
+  setInterviewMode: (v: "resume" | "topic") => void;
+  selectedTopicId: string;
+  setSelectedTopicId: (v: string) => void;
+  selectedJdId: string;
+  setSelectedJdId: (v: string) => void;
+  verificationResult: JobDescriptionAlignment | null;
+  verificationSnapshot: any;
+  isAutoVerifyingMatch: boolean;
+  isStartingInterview: boolean;
+  startInterviewStatus: string;
+  startInterview: () => void;
+}
+
+function StartInterviewModal({
+  open,
+  onClose,
+  profile,
+  roles,
+  topics,
+  jobDescriptions,
+  selectedRoleInput,
+  setSelectedRoleInput,
+  interviewMode,
+  setInterviewMode,
+  selectedTopicId,
+  setSelectedTopicId,
+  selectedJdId,
+  setSelectedJdId,
+  verificationResult,
+  verificationSnapshot,
+  isAutoVerifyingMatch,
+  isStartingInterview,
+  startInterviewStatus,
+  startInterview,
+}: StartInterviewModalProps) {
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-foreground/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative z-10 w-full max-w-lg bg-card rounded-2xl border border-border shadow-2xl animate-slide-up">
+        {/* Header */}
+        <div className="flex items-center justify-between p-5 border-b border-border">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
+              <Play className="w-4 h-4 text-primary" />
+            </div>
+            <div>
+              <h2 className="font-bold text-foreground">Start Interview</h2>
+              <p className="text-xs text-muted">Choose your mode and begin</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg text-muted hover:text-foreground hover:bg-border/40 transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {/* Mode Toggle */}
+          <div className="flex gap-2">
+            {["resume", "topic"].map((mode) => (
+              <button
+                key={mode}
+                onClick={() => setInterviewMode(mode as "resume" | "topic")}
+                className={`flex-1 py-2.5 rounded-xl text-sm font-semibold border transition-all ${
+                  interviewMode === mode
+                    ? "bg-primary text-white border-primary shadow-md shadow-primary/20"
+                    : "bg-transparent text-muted border-border hover:border-primary/30"
+                }`}
+              >
+                {mode === "resume" ? "Resume Interview" : "Topic Interview"}
+              </button>
+            ))}
+          </div>
+
+          {interviewMode === "resume" ? (
+            <div className="space-y-3">
+              <div className="rounded-xl border border-border bg-background/60 p-3.5">
+                <p className="text-xs font-bold text-muted uppercase tracking-wide mb-2">Step 1 — Interview Role</p>
+                <input
+                  type="text"
+                  list="roles-suggestions"
+                  value={selectedRoleInput}
+                  onChange={(e) => setSelectedRoleInput(e.target.value)}
+                  placeholder="e.g. Frontend Developer"
+                  className="w-full px-3.5 py-2.5 rounded-lg bg-background border border-border focus:outline-none focus:border-primary transition-colors text-sm"
+                />
+                <datalist id="roles-suggestions">
+                  {profile?.resume?.parsed_data?.recommended_roles?.map((role, i) => (
+                    <option key={`rec-${i}`} value={role}>Recommended by AI</option>
+                  ))}
+                  {roles.map((r) => (
+                    <option key={`admin-${r.id}`} value={r.title}>Standard Role</option>
+                  ))}
+                </datalist>
+              </div>
+              <div className="rounded-xl border border-border bg-background/60 p-3.5">
+                <p className="text-xs font-bold text-muted uppercase tracking-wide mb-2">Step 2 — Job Description</p>
+                <select
+                  value={selectedJdId}
+                  onChange={(e) => setSelectedJdId(e.target.value)}
+                  className="w-full"
+                >
+                  <option value="">Select Job Description</option>
+                  {jobDescriptions.map((jd) => (
+                    <option key={jd.id} value={jd.id}>
+                      {jd.title}{jd.company ? ` — ${jd.company}` : ""}
+                    </option>
+                  ))}
+                </select>
+                {jobDescriptions.length === 0 && (
+                  <p className="text-xs text-muted mt-2">Add a job description in Settings first.</p>
+                )}
+              </div>
+
+              {/* Verification result inline */}
+              {(isAutoVerifyingMatch) && (
+                <div className="flex items-center gap-2 text-xs text-muted px-1">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  Checking resume vs JD…
+                </div>
+              )}
+              {verificationResult && interviewMode === "resume" && (
+                <div className="rounded-xl border border-border bg-background/50 p-3 text-xs space-y-2">
+                  <p className="font-semibold text-foreground">{verificationResult.fit_summary}</p>
+                  <div className="flex gap-4">
+                    <div>
+                      <span className="text-green-500 font-bold">✓ Meeting</span>
+                      <ul className="text-muted mt-0.5 space-y-0.5">
+                        {verificationResult.meeting_expectations.slice(0, 2).map((i, idx) => (
+                          <li key={idx}>· {i}</li>
+                        ))}
+                      </ul>
+                    </div>
+                    <div>
+                      <span className="text-amber-500 font-bold">✗ Missing</span>
+                      <ul className="text-muted mt-0.5 space-y-0.5">
+                        {verificationResult.missing_expectations.slice(0, 2).map((i, idx) => (
+                          <li key={idx}>· {i}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-border bg-background/60 p-3.5">
+              <p className="text-xs font-bold text-muted uppercase tracking-wide mb-2">Select Topic</p>
+              <select
+                value={selectedTopicId}
+                onChange={(e) => setSelectedTopicId(e.target.value)}
+                className="w-full"
+              >
+                {topics.map((t) => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {!profile?.resume && interviewMode === "resume" && (
+            <div className="flex items-center gap-2 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20">
+              <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+              <p className="text-xs text-amber-400">Upload your resume in Settings to enable Resume Interview.</p>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="p-5 pt-0">
+          <button
+            onClick={startInterview}
+            disabled={isStartingInterview}
+            className="w-full py-3.5 bg-primary hover:bg-secondary text-white rounded-xl font-bold transition-all shadow-lg shadow-primary/20 flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {isStartingInterview ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span className="text-sm">{startInterviewStatus}</span>
+              </>
+            ) : (
+              <>
+                <Play className="w-4 h-4" />
+                Start Interview
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Overview Page ────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -48,17 +271,16 @@ export default function DashboardPage() {
   const [verificationResult, setVerificationResult] = useState<JobDescriptionAlignment | null>(null);
   const [verificationSnapshot, setVerificationSnapshot] = useState<any | null>(null);
   const [isAutoVerifyingMatch, setIsAutoVerifyingMatch] = useState(false);
+  const [showStartModal, setShowStartModal] = useState(false);
   const verificationRequestRef = useRef<Promise<any | null> | null>(null);
   const latestVerificationContextRef = useRef("");
   const didBootstrapRef = useRef(false);
 
   const getVerificationStorageKey = (userId: string) => `jd-verification-cache:${userId}`;
-
   const getVerificationComboKey = (jdId: string, resumeUploadedAt: string, jdUpdatedAt: string) =>
     `${jdId || ""}::${resumeUploadedAt || ""}::${jdUpdatedAt || ""}`;
 
-  const selectedJdUpdatedAt =
-    jobDescriptions.find((jd) => jd.id === selectedJdId)?.updated_at || "";
+  const selectedJdUpdatedAt = jobDescriptions.find((jd) => jd.id === selectedJdId)?.updated_at || "";
   const verificationCacheOwnerId =
     ((profile as any)?.id as string | undefined) ||
     ((profile as any)?.user_id as string | undefined) ||
@@ -67,7 +289,6 @@ export default function DashboardPage() {
   const getApiErrorMessage = (err: any, fallbackMessage: string) => {
     const status = err?.response?.status;
     const detail = err?.response?.data?.detail;
-
     const rawDetail =
       typeof detail === "string"
         ? detail
@@ -76,118 +297,72 @@ export default function DashboardPage() {
         : detail
         ? JSON.stringify(detail)
         : "";
-
     const normalized = rawDetail.toLowerCase();
     const isAiBusy =
       status === 503 ||
       normalized.includes("unavailable") ||
       normalized.includes("high demand") ||
       normalized.includes("resource_exhausted");
-
-    if (isAiBusy) {
-      return "AI service is currently busy. Please try again in a few seconds.";
-    }
-
+    if (isAiBusy) return "AI service is currently busy. Please try again in a few seconds.";
     return rawDetail || fallbackMessage;
   };
 
   useEffect(() => {
     if (didBootstrapRef.current) return;
     didBootstrapRef.current = true;
-
     fetchDashboardData();
     void warmupSpeechVoices();
   }, []);
 
-  useEffect(() => {
-    setVerificationResult(null);
-    setVerificationSnapshot(null);
-  }, [selectedJdId]);
+  useEffect(() => { setVerificationResult(null); setVerificationSnapshot(null); }, [selectedJdId]);
 
   useEffect(() => {
     if (!verificationSnapshot) return;
     const currentResumeUploadedAt = profile?.resume?.uploaded_at || "";
     const snapshotResumeUploadedAt = verificationSnapshot?.resume_snapshot?.uploaded_at || "";
     if (currentResumeUploadedAt && snapshotResumeUploadedAt && currentResumeUploadedAt !== snapshotResumeUploadedAt) {
-      setVerificationResult(null);
-      setVerificationSnapshot(null);
+      setVerificationResult(null); setVerificationSnapshot(null);
     }
   }, [profile?.resume?.uploaded_at, verificationSnapshot]);
 
   useEffect(() => {
-    latestVerificationContextRef.current = `${interviewMode}::${selectedJdId || ""}::${
-      profile?.resume?.uploaded_at || ""
-    }::${selectedJdUpdatedAt || ""}`;
+    latestVerificationContextRef.current = `${interviewMode}::${selectedJdId || ""}::${profile?.resume?.uploaded_at || ""}::${selectedJdUpdatedAt || ""}`;
   }, [interviewMode, selectedJdId, profile?.resume?.uploaded_at, selectedJdUpdatedAt]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (!verificationCacheOwnerId || !selectedJdId || !profile?.resume?.uploaded_at) return;
     if (verificationSnapshot || verificationResult) return;
-
     const storageKey = getVerificationStorageKey(verificationCacheOwnerId);
-    const comboKey = getVerificationComboKey(
-      selectedJdId,
-      profile.resume.uploaded_at,
-      selectedJdUpdatedAt
-    );
-
+    const comboKey = getVerificationComboKey(selectedJdId, profile.resume.uploaded_at, selectedJdUpdatedAt);
     try {
       const raw = localStorage.getItem(storageKey);
       if (!raw) return;
       const parsed = JSON.parse(raw);
-      const cacheByCombo = parsed?.cacheByCombo || {};
-      const entry = cacheByCombo[comboKey];
+      const entry = (parsed?.cacheByCombo || {})[comboKey];
       if (!entry) return;
       setVerificationResult(entry?.result || null);
       setVerificationSnapshot(entry?.snapshot || null);
-    } catch {
-      // Ignore malformed local cache.
-    }
-  }, [
-    verificationCacheOwnerId,
-    profile?.resume?.uploaded_at,
-    selectedJdId,
-    selectedJdUpdatedAt,
-    verificationSnapshot,
-    verificationResult,
-  ]);
+    } catch { /* ignore malformed cache */ }
+  }, [verificationCacheOwnerId, profile?.resume?.uploaded_at, selectedJdId, selectedJdUpdatedAt, verificationSnapshot, verificationResult]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (!verificationCacheOwnerId) return;
-
     const storageKey = getVerificationStorageKey(verificationCacheOwnerId);
-    if (!verificationSnapshot || !verificationResult) {
-      return;
-    }
-
+    if (!verificationSnapshot || !verificationResult) return;
     const snapshotJdId = verificationSnapshot?.job_description?.id || selectedJdId || "";
     const snapshotResumeUploadedAt = verificationSnapshot?.resume_snapshot?.uploaded_at || "";
     const snapshotJdUpdatedAt = verificationSnapshot?.job_description?.updated_at || "";
-    if (!snapshotJdId || !snapshotResumeUploadedAt) {
-      return;
-    }
-
-    const comboKey = getVerificationComboKey(
-      snapshotJdId,
-      snapshotResumeUploadedAt,
-      snapshotJdUpdatedAt
-    );
-
+    if (!snapshotJdId || !snapshotResumeUploadedAt) return;
+    const comboKey = getVerificationComboKey(snapshotJdId, snapshotResumeUploadedAt, snapshotJdUpdatedAt);
     try {
       const raw = localStorage.getItem(storageKey);
       const parsed = raw ? JSON.parse(raw) : {};
       const cacheByCombo = parsed?.cacheByCombo || {};
-      cacheByCombo[comboKey] = {
-        snapshot: verificationSnapshot,
-        result: verificationResult,
-        savedAt: verificationSnapshot?.saved_at || new Date().toISOString(),
-      };
+      cacheByCombo[comboKey] = { snapshot: verificationSnapshot, result: verificationResult, savedAt: verificationSnapshot?.saved_at || new Date().toISOString() };
       localStorage.setItem(storageKey, JSON.stringify({ cacheByCombo }));
-    } catch {
-      // Local cache is best-effort only.
-    }
+    } catch { /* best-effort */ }
   }, [verificationCacheOwnerId, selectedJdId, verificationSnapshot, verificationResult]);
 
   const fetchDashboardData = async () => {
@@ -201,28 +376,17 @@ export default function DashboardPage() {
       ]);
       setProfile(profileRes.data);
       setHistory(historyRes.data.reports || []);
-      
       const availableRoles = rolesRes.data.roles || [];
       setRoles(availableRoles);
       const availableTopics = topicsRes.data.topics || [];
       setTopics(availableTopics);
-      if (availableTopics.length > 0) {
-        setSelectedTopicId(availableTopics[0].id);
-      }
-
+      if (availableTopics.length > 0) setSelectedTopicId(availableTopics[0].id);
       const jdItems = jdRes.data.items || [];
       setJobDescriptions(jdItems);
-      if (jdItems.length > 0) {
-        setSelectedJdId(jdItems[0].id);
-      }
-      
-      // Auto-populate input if there are recommended roles
+      if (jdItems.length > 0) setSelectedJdId(jdItems[0].id);
       const recRoles = profileRes.data?.resume?.parsed_data?.recommended_roles;
-      if (recRoles && recRoles.length > 0) {
-        setSelectedRoleInput(recRoles[0]);
-      } else if (availableRoles.length > 0) {
-        setSelectedRoleInput(availableRoles[0].title);
-      }
+      if (recRoles && recRoles.length > 0) setSelectedRoleInput(recRoles[0]);
+      else if (availableRoles.length > 0) setSelectedRoleInput(availableRoles[0].title);
     } catch (err) {
       console.error("Failed to fetch dashboard data", err);
     } finally {
@@ -232,206 +396,49 @@ export default function DashboardPage() {
 
   const buildResumeInterviewPayload = () => {
     const payload: any = {};
-    if (selectedJdId) {
-      payload.job_description_id = selectedJdId;
-    }
-
-    const matchingAdminRole = roles.find(
-      (r) => r.title.toLowerCase() === selectedRoleInput.trim().toLowerCase()
-    );
-
-    if (matchingAdminRole) {
-      payload.role_id = matchingAdminRole.id;
-    } else {
-      payload.custom_role = selectedRoleInput.trim();
-    }
-
+    if (selectedJdId) payload.job_description_id = selectedJdId;
+    const matchingAdminRole = roles.find((r) => r.title.toLowerCase() === selectedRoleInput.trim().toLowerCase());
+    if (matchingAdminRole) payload.role_id = matchingAdminRole.id;
+    else payload.custom_role = selectedRoleInput.trim();
     return payload;
   };
 
   const verifyResumeMatchInternal = async ({ silent = false }: { silent?: boolean } = {}) => {
-    if (interviewMode !== "resume") {
-      return null;
-    }
-    if (!profile?.resume || !selectedJdId) {
-      return null;
-    }
-
-    if (verificationRequestRef.current) {
-      return verificationRequestRef.current;
-    }
-
-    const requestContextKey = `${interviewMode}::${selectedJdId}::${
-      profile?.resume?.uploaded_at || ""
-    }::${selectedJdUpdatedAt || ""}`;
-
+    if (interviewMode !== "resume") return null;
+    if (!profile?.resume || !selectedJdId) return null;
+    if (verificationRequestRef.current) return verificationRequestRef.current;
+    const requestContextKey = `${interviewMode}::${selectedJdId}::${profile?.resume?.uploaded_at || ""}::${selectedJdUpdatedAt || ""}`;
     const requestPromise = (async () => {
-      if (silent) {
-        setIsAutoVerifyingMatch(true);
-      }
-
+      if (silent) setIsAutoVerifyingMatch(true);
       try {
         const payload = buildResumeInterviewPayload();
         const { data } = await api.post("/interview/verify", payload);
-
-        // Ignore stale response if role/JD/resume changed while request was in flight.
-        if (latestVerificationContextRef.current !== requestContextKey) {
-          return null;
-        }
-
+        if (latestVerificationContextRef.current !== requestContextKey) return null;
         setVerificationResult(data?.jd_alignment || null);
         setVerificationSnapshot(data || null);
         return data || null;
       } catch (err: any) {
-        if (silent) {
-          console.warn("Auto verification failed", err);
-        } else {
-          alert(getApiErrorMessage(err, "Failed to verify resume against job description"));
-        }
+        if (silent) console.warn("Auto verification failed", err);
+        else toast.error(getApiErrorMessage(err, "Failed to verify resume against job description"));
         return null;
       } finally {
-        if (silent) {
-          setIsAutoVerifyingMatch(false);
-        }
+        if (silent) setIsAutoVerifyingMatch(false);
       }
     })();
-
     verificationRequestRef.current = requestPromise;
-    try {
-      return await requestPromise;
-    } finally {
-      verificationRequestRef.current = null;
-    }
-  };
-
-  const downloadVerificationPdf = async () => {
-    if (!verificationSnapshot || !verificationResult) {
-      alert("Run Resume vs JD verification first.");
-      return;
-    }
-
-    const { jsPDF } = await import("jspdf");
-    const doc = new jsPDF({ unit: "pt", format: "a4" });
-
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const pageHeight = doc.internal.pageSize.getHeight();
-    const margin = 40;
-    const maxWidth = pageWidth - margin * 2;
-    let y = 46;
-
-    const ensureSpace = (needed = 20) => {
-      if (y + needed <= pageHeight - 40) return;
-      doc.addPage();
-      y = 46;
-    };
-
-    const addHeading = (text: string) => {
-      ensureSpace(28);
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(16);
-      doc.text(text, margin, y);
-      y += 24;
-    };
-
-    const addLabelValue = (label: string, value: string) => {
-      const safeText = (value || "-").toString();
-      const labelLines = doc.splitTextToSize(`${label}:`, maxWidth);
-      const valueLines = doc.splitTextToSize(safeText, maxWidth);
-      const blockHeight = labelLines.length * 13 + valueLines.length * 14 + 10;
-
-      ensureSpace(blockHeight + 4);
-
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(11);
-      doc.text(labelLines, margin, y);
-      y += labelLines.length * 13 + 2;
-
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(11);
-      doc.text(valueLines, margin, y);
-      y += valueLines.length * 14 + 8;
-    };
-
-    const addList = (title: string, items: string[]) => {
-      ensureSpace(22);
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(12);
-      doc.text(title, margin, y);
-      y += 16;
-
-      const values = (items || []).length ? items : ["-"];
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(11);
-      values.forEach((item) => {
-        const lines = doc.splitTextToSize(`- ${item}`, maxWidth - 6);
-        ensureSpace(lines.length * 14 + 8);
-        doc.text(lines, margin + 6, y);
-        y += lines.length * 14 + 2;
-      });
-      y += 6;
-    };
-
-    const jd = verificationSnapshot?.job_description || {};
-    const resume = verificationSnapshot?.resume_snapshot || {};
-    const parsed = resume?.parsed_data || {};
-    const savedAt = verificationSnapshot?.saved_at || new Date().toISOString();
-
-    addHeading("Resume vs Job Description Verification");
-    addLabelValue("Verification ID", verificationSnapshot?.verification_id || "-");
-    addLabelValue("Saved At", new Date(savedAt).toLocaleString());
-    addLabelValue("Role", verificationSnapshot?.role_title || selectedRoleInput || "-");
-
-    y += 6;
-    addHeading("Job Description Snapshot");
-    addLabelValue("JD Title", jd?.title || "-");
-    addLabelValue("Company", jd?.company || "-");
-    addLabelValue("Required Skills", (jd?.required_skills || []).join(", ") || "-");
-    addLabelValue("JD Description", jd?.description || "-");
-
-    y += 6;
-    addHeading("Resume Snapshot");
-    addLabelValue("Resume File", resume?.filename || profile?.resume?.filename || "-");
-    addLabelValue("Candidate", parsed?.name || profile?.name || "-");
-    addLabelValue("Email", parsed?.email || profile?.email || "-");
-    addLabelValue("Phone", parsed?.phone || "-");
-    addLabelValue("Location", parsed?.location || "-");
-    addLabelValue("Extracted Skills", (resume?.skills || profile?.skills || []).join(", ") || "-");
-    addLabelValue("Experience Summary", parsed?.experience_summary || "-");
-
-    y += 6;
-    addHeading("Alignment Result");
-    addLabelValue("Fit Summary", verificationResult?.fit_summary || "-");
-    addList("Meeting Expectations", verificationResult?.meeting_expectations || []);
-    addList("Missing Expectations", verificationResult?.missing_expectations || []);
-    addList("Improvement Suggestions", verificationResult?.improvement_suggestions || []);
-
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    doc.save(`resume-jd-verification-${stamp}.pdf`);
+    try { return await requestPromise; } finally { verificationRequestRef.current = null; }
   };
 
   const isVerificationFresh = () => {
-    if (!verificationResult || !verificationSnapshot) {
-      return false;
-    }
-
+    if (!verificationResult || !verificationSnapshot) return false;
     const snapshotJdId = verificationSnapshot?.job_description?.id || "";
-    if (!selectedJdId || snapshotJdId !== selectedJdId) {
-      return false;
-    }
-
+    if (!selectedJdId || snapshotJdId !== selectedJdId) return false;
     const currentResumeUploadedAt = profile?.resume?.uploaded_at || "";
     const snapshotResumeUploadedAt = verificationSnapshot?.resume_snapshot?.uploaded_at || "";
-    if (currentResumeUploadedAt && snapshotResumeUploadedAt && currentResumeUploadedAt !== snapshotResumeUploadedAt) {
-      return false;
-    }
-
-    const currentJdUpdatedAt =
-      jobDescriptions.find((jd) => jd.id === selectedJdId)?.updated_at || "";
+    if (currentResumeUploadedAt && snapshotResumeUploadedAt && currentResumeUploadedAt !== snapshotResumeUploadedAt) return false;
+    const currentJdUpdatedAt = jobDescriptions.find((jd) => jd.id === selectedJdId)?.updated_at || "";
     const snapshotJdUpdatedAt = verificationSnapshot?.job_description?.updated_at || "";
-    if (currentJdUpdatedAt && currentJdUpdatedAt !== snapshotJdUpdatedAt) {
-      return false;
-    }
-
+    if (currentJdUpdatedAt && currentJdUpdatedAt !== snapshotJdUpdatedAt) return false;
     return true;
   };
 
@@ -440,118 +447,67 @@ export default function DashboardPage() {
     if (!profile?.resume || !selectedJdId) return;
     if (isStartingInterview || isAutoVerifyingMatch) return;
     if (isVerificationFresh()) return;
-
-    const timer = setTimeout(() => {
-      void verifyResumeMatchInternal({ silent: true });
-    }, 450);
-
+    const timer = setTimeout(() => { void verifyResumeMatchInternal({ silent: true }); }, 450);
     return () => clearTimeout(timer);
-  }, [
-    interviewMode,
-    profile?.resume?.uploaded_at,
-    selectedJdId,
-    selectedJdUpdatedAt,
-    isStartingInterview,
-    isAutoVerifyingMatch,
-    verificationSnapshot,
-    verificationResult,
-  ]);
+  }, [interviewMode, profile?.resume?.uploaded_at, selectedJdId, selectedJdUpdatedAt, isStartingInterview, isAutoVerifyingMatch, verificationSnapshot, verificationResult]);
 
   const startInterview = async () => {
     if (interviewMode === "resume" && (!selectedRoleInput.trim() || !profile?.resume)) {
-      alert("Please upload your resume first and select or type a job role.");
-      return;
+      toast.error("Please upload your resume first and select or type a job role."); return;
     }
     if (interviewMode === "resume" && !selectedJdId) {
-      alert("Please select a Job Description before starting Resume Interview.");
-      return;
+      toast.error("Please select a Job Description before starting Resume Interview."); return;
     }
     if (interviewMode === "topic" && !selectedTopicId) {
-      alert("Please select a topic for topic-wise interview.");
-      return;
+      toast.error("Please select a topic for topic-wise interview."); return;
     }
-
     setIsStartingInterview(true);
     setStartInterviewStatus("Checking audio and preparing your interview setup...");
     try {
-      // Called from button click gesture to improve media autoplay reliability.
       await unlockSpeechPlayback().catch(() => undefined);
-
-      const payload: any = {
-        interview_type: interviewMode,
-      };
+      const payload: any = { interview_type: interviewMode };
       let verifiedAlignment: any = verificationResult;
-
       if (interviewMode === "topic") {
         setStartInterviewStatus("Loading selected topic interview...");
         payload.topic_id = selectedTopicId;
       } else {
-        // Reuse saved verification unless JD/resume changed.
         if (!isVerificationFresh()) {
           setStartInterviewStatus("Verifying resume against selected job description...");
           const verifyData = await verifyResumeMatchInternal({ silent: true });
-          if (!verifyData) {
-            throw new Error("Unable to verify resume against the selected job description");
-          }
+          if (!verifyData) throw new Error("Unable to verify resume against the selected job description");
           verifiedAlignment = verifyData?.jd_alignment || null;
         }
         setStartInterviewStatus("Finalizing resume interview configuration...");
         Object.assign(payload, buildResumeInterviewPayload());
       }
-
       setStartInterviewStatus("Generating your first question...");
       const { data } = await api.post("/interview/start", payload);
-
-      const preferredVoice =
-        ((typeof window !== "undefined"
-          ? (localStorage.getItem("speech_voice_gender") as SpeechVoiceGender | null)
-          : null) ||
-          (profile?.speech_settings?.voice_gender as SpeechVoiceGender | undefined) ||
-          "female") as SpeechVoiceGender;
-
-      prefetchSpeech(data?.question?.question || "", {
-        voiceGender: preferredVoice,
-        style: "assistant",
-      });
-
+      const preferredVoice = ((typeof window !== "undefined"
+        ? (localStorage.getItem("speech_voice_gender") as SpeechVoiceGender | null)
+        : null) || (profile?.speech_settings?.voice_gender as SpeechVoiceGender | undefined) || "female") as SpeechVoiceGender;
+      prefetchSpeech(data?.question?.question || "", { voiceGender: preferredVoice, style: "assistant" });
       try {
         setStartInterviewStatus("Preloading first question audio...");
         await Promise.race([
-          prepareSpeech(data?.question?.question || "", {
-            voiceGender: preferredVoice,
-            style: "assistant",
-          }),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("xtts prefetch timeout")), 25000)
-          ),
+          prepareSpeech(data?.question?.question || "", { voiceGender: preferredVoice, style: "assistant" }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("xtts prefetch timeout")), 25000)),
         ]);
-      } catch {
-        // Continue to interview page; runtime speech fallback still applies.
-      }
-
+      } catch { /* continue */ }
       const alignmentToStore = verifiedAlignment || data?.jd_alignment;
       if (typeof window !== "undefined" && alignmentToStore) {
         sessionStorage.setItem(`jd_alignment:${data.session_id}`, JSON.stringify(alignmentToStore));
       }
       const timerEnabled = !!data?.timer?.enabled;
       const timerSeconds = Number(data?.timer?.seconds || 0);
-      const timerQuery =
-        timerEnabled && timerSeconds > 0
-          ? `&timerEnabled=1&timerSeconds=${timerSeconds}`
-          : "";
-
+      const timerQuery = timerEnabled && timerSeconds > 0 ? `&timerEnabled=1&timerSeconds=${timerSeconds}` : "";
       setStartInterviewStatus("Opening interview room...");
       router.push(
-        `/interview?session=${data.session_id}&q=${encodeURIComponent(
-          data.question.question
-        )}&qid=${data.question.question_id}&num=${data.question.question_number}&diff=${
-          data.question.difficulty
-        }&total=${data.question.total_questions || 5}${timerQuery}`
+        `/interview?session=${data.session_id}&q=${encodeURIComponent(data.question.question)}&qid=${data.question.question_id}&num=${data.question.question_number}&diff=${data.question.difficulty}&total=${data.question.total_questions || 5}${timerQuery}`
       );
     } catch (err: any) {
       setIsStartingInterview(false);
       setStartInterviewStatus("Preparing your interview session...");
-      alert(getApiErrorMessage(err, "Failed to start interview"));
+      toast.error(getApiErrorMessage(err, "Failed to start interview"));
     }
   };
 
@@ -564,361 +520,357 @@ export default function DashboardPage() {
     );
   }
 
-  const avgScore =
-    history.length > 0
-      ? Math.round(history.reduce((acc, h) => acc + h.overall_score, 0) / history.length)
-      : 0;
+  const avgScore = history.length > 0
+    ? Math.round(history.reduce((acc, h) => acc + h.overall_score, 0) / history.length)
+    : 0;
+
+  const firstName = profile?.name?.split(" ")[0] || "there";
+
+  // Build topic performance from history
+  const topicScoreMap: Record<string, { scores: number[]; name: string }> = {};
+  history.forEach((h) => {
+    const key = h.role_title || "General";
+    if (!topicScoreMap[key]) topicScoreMap[key] = { scores: [], name: key };
+    topicScoreMap[key].scores.push(h.overall_score);
+  });
+  const topicPerf = Object.values(topicScoreMap).map((t) => ({
+    name: t.name,
+    avg: Math.round(t.scores.reduce((a, b) => a + b, 0) / t.scores.length),
+    count: t.scores.length,
+  })).sort((a, b) => b.avg - a.avg);
+  const skills: string[] = profile?.skills || [];
 
   return (
     <ProtectedRoute requiredRole="student">
       <Navbar />
+
+      {/* Loading overlay when starting interview */}
       {isStartingInterview && (
-        <div className="fixed inset-0 z-[70] bg-background/90 backdrop-blur-sm px-4">
-          <div className="w-full h-full flex items-center justify-center">
-            <div className="w-full max-w-lg rounded-2xl border border-border bg-card p-7 text-center shadow-2xl">
-              <Loader2 className="w-10 h-10 animate-spin mx-auto mb-4" />
-              <h2 className="text-2xl font-bold mb-2">Preparing your interview</h2>
-              <p className="text-muted mb-4">{startInterviewStatus}</p>
-              <p className="text-xs text-muted">
-                Please keep this page open while we prepare questions and speech.
-              </p>
-            </div>
+        <div className="fixed inset-0 z-[70] bg-background/90 backdrop-blur-sm px-4 flex items-center justify-center">
+          <div className="w-full max-w-lg rounded-2xl border border-border bg-card p-7 text-center shadow-2xl">
+            <Loader2 className="w-10 h-10 animate-spin mx-auto mb-4 text-primary" />
+            <h2 className="text-xl font-bold mb-2">Preparing your interview</h2>
+            <p className="text-muted text-sm mb-4">{startInterviewStatus}</p>
+            <p className="text-xs text-muted">Please keep this page open while we prepare your session.</p>
           </div>
         </div>
       )}
-      <main className="pt-20 pb-12 px-4 max-w-7xl mx-auto">
-        <div className="animate-fade-in">
-          <div className="mb-8">
-            <h1 className="text-3xl font-bold tracking-tight mb-2">
-              Welcome, {profile?.name?.split(" ")[0]}
-            </h1>
-            <p className="text-muted">Here's an overview of your interview progress.</p>
+
+      <StartInterviewModal
+        open={showStartModal}
+        onClose={() => setShowStartModal(false)}
+        profile={profile}
+        roles={roles}
+        topics={topics}
+        jobDescriptions={jobDescriptions}
+        selectedRoleInput={selectedRoleInput}
+        setSelectedRoleInput={setSelectedRoleInput}
+        interviewMode={interviewMode}
+        setInterviewMode={setInterviewMode}
+        selectedTopicId={selectedTopicId}
+        setSelectedTopicId={setSelectedTopicId}
+        selectedJdId={selectedJdId}
+        setSelectedJdId={setSelectedJdId}
+        verificationResult={verificationResult}
+        verificationSnapshot={verificationSnapshot}
+        isAutoVerifyingMatch={isAutoVerifyingMatch}
+        isStartingInterview={isStartingInterview}
+        startInterviewStatus={startInterviewStatus}
+        startInterview={startInterview}
+      />
+
+      <main className="pt-20 pb-16 px-4 max-w-7xl mx-auto">
+        <div className="animate-fade-in space-y-6">
+
+          {/* ── Page Header ───────────────────────────────────────────── */}
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div>
+              <h1 className="text-2xl font-black tracking-tight text-foreground">
+                Overview
+              </h1>
+              <p className="text-muted text-sm mt-0.5">
+                Welcome back, <span className="text-primary font-semibold">{firstName}</span> — here&apos;s your snapshot.
+              </p>
+            </div>
+            <button
+              onClick={() => setShowStartModal(true)}
+              className="inline-flex items-center gap-2 px-5 py-2.5 bg-primary hover:bg-secondary text-white rounded-xl font-bold text-sm transition-all shadow-lg shadow-primary/20 active:scale-[0.97]"
+            >
+              <Play className="w-4 h-4" />
+              Start Interview
+            </button>
           </div>
 
-          {/* Stats Row */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-            <div className="p-6 rounded-xl bg-card border border-border flex items-center gap-4">
-              <div className="p-3 bg-white/5 rounded-lg text-muted">
-                <FileText className="w-6 h-6" />
-              </div>
-              <div>
-                <p className="text-sm text-muted mb-1">Total Interviews</p>
-                <p className="text-2xl font-bold">{history.length}</p>
-              </div>
-            </div>
-            <div className="p-6 rounded-xl bg-card border border-border flex items-center gap-4">
-              <div className="w-1 h-14 rounded-full bg-amber-400/80" />
-              <div className="flex-1">
-                <p className="text-sm text-muted mb-1">Average Score</p>
-                <p className="text-2xl font-bold tracking-tight">{avgScore}%</p>
-              </div>
-            </div>
-            <div className="p-6 rounded-xl bg-card border border-border flex items-center gap-4">
-              <div className={`w-1 h-14 rounded-full ${profile?.resume ? "bg-green-400/80" : "bg-rose-400/80"}`} />
-              <div className="flex-1">
-                <p className="text-sm text-muted mb-1">Resume Status</p>
-                <p className={`text-xl font-bold ${profile?.resume ? "text-green-400" : "text-rose-400"}`}>
-                  {profile?.resume ? "Uploaded" : "Missing"}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.9fr)_minmax(320px,1fr)] gap-8">
-            {/* Left Column */}
-            <div className="space-y-8">
-              {/* Action Banner */}
-              {!profile?.resume ? (
-                <div className="p-6 rounded-xl bg-blue-500/10 border border-blue-500/20 flex flex-col sm:flex-row items-center justify-between gap-4">
-                  <div className="flex items-center gap-3">
-                    <AlertCircle className="w-6 h-6 text-blue-400 shrink-0" />
-                    <div>
-                      <h3 className="font-semibold text-blue-400">Upload Your Resume</h3>
-                      <p className="text-sm text-blue-400/80">
-                        We use your resume to personalize your interview questions.
-                      </p>
-                    </div>
-                  </div>
-                  <Link
-                    href="/settings"
-                    className="px-5 py-2.5 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-sm font-semibold transition-colors whitespace-nowrap"
-                  >
-                    Go to Settings
-                  </Link>
+          {/* ── Stats Strip ───────────────────────────────────────────── */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {[
+              { label: "Total Sessions", value: history.length, icon: BookOpen, color: "text-primary", bg: "bg-primary/8" },
+              { label: "Average Score", value: `${avgScore}%`, icon: TrendingUp, color: "text-amber-500", bg: "bg-amber-500/8" },
+              { label: "Best Score", value: history.length > 0 ? `${Math.max(...history.map(h => h.overall_score))}%` : "—", icon: Trophy, color: "text-emerald-500", bg: "bg-emerald-500/8" },
+              { label: "Resume", value: profile?.resume ? "Uploaded" : "Missing", icon: FileText, color: profile?.resume ? "text-emerald-500" : "text-rose-400", bg: profile?.resume ? "bg-emerald-500/8" : "bg-rose-400/8" },
+            ].map((stat) => (
+              <div key={stat.label} className="p-4 rounded-xl bg-card border border-border flex items-center gap-3">
+                <div className={`w-9 h-9 rounded-lg ${stat.bg} flex items-center justify-center shrink-0`}>
+                  <stat.icon className={`w-4.5 h-4.5 ${stat.color}`} />
                 </div>
-              ) : (
-                <div className="p-6 rounded-xl border border-border bg-gradient-to-br from-card to-white/5">
-                  <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
-                    <div>
-                      <h2 className="text-xl font-bold mb-2">Ready for a mock interview?</h2>
-                      <p className="text-muted">
-                        Choose Resume Interview or Topic Interview and start practicing.
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => setInterviewMode("resume")}
-                        className={`px-3 py-1.5 rounded-lg text-sm border ${
-                          interviewMode === "resume"
-                            ? "bg-black text-white border-black"
-                            : "bg-transparent text-muted border-border"
-                        } cursor-pointer`}
-                      >
-                        Resume Interview
-                      </button>
-                      <button
-                        onClick={() => setInterviewMode("topic")}
-                        className={`px-3 py-1.5 rounded-lg text-sm border ${
-                          interviewMode === "topic"
-                            ? "bg-black text-white border-black"
-                            : "bg-transparent text-muted border-border"
-                        } cursor-pointer`}
-                      >
-                        Topic Interview
-                      </button>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_260px] gap-4 items-start">
-                    {interviewMode === "resume" ? (
-                      <div className="w-full grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <div className="rounded-lg border border-border bg-background/60 p-3">
-                          <p className="text-xs uppercase tracking-wide text-muted font-semibold mb-1">
-                            Step 1: Choose Interview Role (Required)
-                          </p>
-                          <p className="text-xs text-muted mb-2">
-                            Role is the position you are preparing for. It decides interview question direction.
-                          </p>
-                          <input
-                            type="text"
-                            list="roles-suggestions"
-                            value={selectedRoleInput}
-                            onChange={(e) => setSelectedRoleInput(e.target.value)}
-                            placeholder="e.g. Frontend Developer"
-                            className="w-full px-4 py-2.5 rounded-lg bg-background border border-border focus:outline-none focus:border-white transition-colors"
-                          />
-                          <datalist id="roles-suggestions">
-                            {profile?.resume?.parsed_data?.recommended_roles?.map((role, i) => (
-                              <option key={`rec-${i}`} value={role}>
-                                Recommended by AI
-                              </option>
-                            ))}
-                            {roles.map((r) => (
-                              <option key={`admin-${r.id}`} value={r.title}>
-                                Standard Role
-                              </option>
-                            ))}
-                          </datalist>
-                        </div>
+                <div className="min-w-0">
+                  <p className="text-xs text-muted truncate">{stat.label}</p>
+                  <p className={`text-lg font-black tracking-tight ${stat.color}`}>{stat.value}</p>
+                </div>
+              </div>
+            ))}
+          </div>
 
-                        <div className="rounded-lg border border-border bg-background/60 p-3">
-                          <p className="text-xs uppercase tracking-wide text-muted font-semibold mb-1">
-                            Step 2: Choose Job Description - JD (Required)
-                          </p>
-                          <p className="text-xs text-muted mb-2">
-                            JD is required for Resume Interview. Questions are restricted to JD required skills only.
-                          </p>
-                          <select
-                            value={selectedJdId}
-                            onChange={(e) => setSelectedJdId(e.target.value)}
-                            className="w-full"
-                          >
-                            <option value="">Select Job Description</option>
-                            {jobDescriptions.map((jd) => (
-                              <option key={jd.id} value={jd.id}>
-                                {jd.title}{jd.company ? ` - ${jd.company}` : ""}
-                              </option>
-                            ))}
-                          </select>
-                          {jobDescriptions.length === 0 && (
-                            <p className="text-xs text-muted mt-2">
-                              Add a job description in Settings to enable resume-vs-JD verification.
-                            </p>
-                          )}
+          {/* ── Main Two-Column Layout ─────────────────────────────────── */}
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
 
-                          <p className="text-[11px] text-muted mt-2">
-                            Summary: Role sets interview context. JD required skills define what can be asked.
-                          </p>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="w-full rounded-lg border border-border bg-background/60 p-3">
-                        <p className="text-xs uppercase tracking-wide text-muted font-semibold mb-1">
-                          Topic Interview
-                        </p>
-                        <p className="text-xs text-muted mb-2">
-                          Pick one topic and practice only questions from that topic.
-                        </p>
-                        <select
-                          value={selectedTopicId}
-                          onChange={(e) => setSelectedTopicId(e.target.value)}
-                          className="flex-1 w-full"
-                        >
-                          {topics.map((t) => (
-                            <option key={t.id} value={t.id}>{t.name}</option>
-                          ))}
-                        </select>
-                      </div>
+            {/* Left: Profile Card */}
+            <div className="rounded-2xl border border-border bg-card p-5 space-y-5">
+              <h2 className="font-bold text-foreground flex items-center gap-2">
+                <User className="w-4 h-4 text-primary" />
+                Profile
+              </h2>
+
+              {/* Avatar + Name */}
+              <div className="flex items-center gap-4">
+                <div className="w-14 h-14 rounded-2xl bg-primary flex items-center justify-center shrink-0 shadow-lg shadow-primary/20">
+                  <span className="text-white font-black text-xl">
+                    {profile?.name?.charAt(0).toUpperCase() || "?"}
+                  </span>
+                </div>
+                <div>
+                  <p className="font-bold text-foreground text-lg leading-tight">{profile?.name}</p>
+                  <p className="text-muted text-sm flex items-center gap-1.5 mt-0.5">
+                    <Mail className="w-3.5 h-3.5" />
+                    {profile?.email}
+                  </p>
+                </div>
+              </div>
+
+              {/* Resume status */}
+              <div className={`flex items-center justify-between p-3.5 rounded-xl border ${profile?.resume ? "border-emerald-500/20 bg-emerald-500/5" : "border-rose-400/20 bg-rose-400/5"}`}>
+                <div className="flex items-center gap-2">
+                  <FileText className={`w-4 h-4 ${profile?.resume ? "text-emerald-500" : "text-rose-400"}`} />
+                  <div>
+                    <p className={`text-sm font-semibold ${profile?.resume ? "text-emerald-600" : "text-rose-400"}`}>
+                      {profile?.resume ? "Resume Uploaded" : "No Resume"}
+                    </p>
+                    {profile?.resume && (
+                      <p className="text-xs text-muted">{profile.resume.filename}</p>
                     )}
-
-                    <div className="w-full rounded-lg border border-border bg-background/60 p-3 space-y-3 xl:sticky xl:top-24">
-                      <p className="text-xs uppercase tracking-wide text-muted font-semibold">
-                        Interview Actions
-                      </p>
-                      <button
-                        onClick={startInterview}
-                        disabled={isStartingInterview}
-                        className="w-full px-6 py-2.5 bg-white text-black hover:bg-gray-100 hover:border-primary border border-transparent rounded-lg font-semibold transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
-                      >
-                        {isStartingInterview ? (
-                          <>
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                            Starting...
-                          </>
-                        ) : (
-                          <>
-                            Start Interview
-                            <ChevronRight className="w-4 h-4" />
-                          </>
-                        )}
-                      </button>
-                      <p className="text-xs text-muted">
-                        {interviewMode === "resume"
-                          ? "Resume vs JD is checked automatically. It refreshes only when resume or JD changes."
-                          : "Start directly to generate a focused topic interview."}
-                      </p>
-                    </div>
                   </div>
+                </div>
+                <Link href="/settings" className="text-xs text-primary hover:underline font-semibold">
+                  {profile?.resume ? "Update" : "Upload →"}
+                </Link>
+              </div>
 
-                  {interviewMode === "resume" && selectedJdId && !verificationResult && (
-                    <p className="text-xs text-muted mt-3">
-                      Resume vs JD comparison runs automatically and will appear here.
-                    </p>
-                  )}
+              {/* Skills */}
+              {skills.length > 0 && (
+                <div>
+                  <p className="text-xs font-bold text-muted uppercase tracking-wide mb-2.5">Skills</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {skills.slice(0, 12).map((skill, i) => (
+                      <span
+                        key={i}
+                        className="px-2.5 py-1 rounded-lg bg-primary/8 border border-primary/15 text-primary text-xs font-semibold"
+                      >
+                        {skill}
+                      </span>
+                    ))}
+                    {skills.length > 12 && (
+                      <span className="px-2.5 py-1 rounded-lg bg-border/40 text-muted text-xs font-semibold">
+                        +{skills.length - 12}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
 
-                  {(isAutoVerifyingMatch || isStartingInterview) && (
-                    <p className="text-xs text-muted mt-3">
-                      {isStartingInterview
-                        ? "Preparing your interview session. Please wait..."
-                        : "Auto-checking your resume against the selected JD..."}
-                    </p>
-                  )}
-
-                  {verificationResult && interviewMode === "resume" && (
-                    <div className="mt-4 p-4 rounded-xl border border-border bg-background/50">
-                      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-3">
-                        <div>
-                          <h3 className="text-sm font-semibold mb-1">Resume vs Job Description</h3>
-                          <p className="text-sm text-muted">{verificationResult.fit_summary}</p>
-                          {verificationSnapshot?.saved_at && (
-                            <p className="text-xs text-muted mt-1">
-                              Saved: {new Date(verificationSnapshot.saved_at).toLocaleString()}
-                              {verificationSnapshot?.cached ? " - using saved comparison" : " - updated now"}
-                            </p>
-                          )}
-                        </div>
-                        <button
-                          onClick={downloadVerificationPdf}
-                          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-border bg-white/5 text-sm text-muted hover:text-white hover:bg-white/10 transition-colors"
-                        >
-                          <Download className="w-4 h-4" />
-                          Download PDF
-                        </button>
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
-                        <div>
-                          <p className="font-semibold text-green-400 mb-1">Meeting</p>
-                          <ul className="space-y-1 text-muted">
-                            {verificationResult.meeting_expectations.slice(0, 4).map((item, idx) => (
-                              <li key={`meet-${idx}`}>- {item}</li>
-                            ))}
-                          </ul>
-                        </div>
-                        <div>
-                          <p className="font-semibold text-yellow-400 mb-1">Missing</p>
-                          <ul className="space-y-1 text-muted">
-                            {verificationResult.missing_expectations.slice(0, 4).map((item, idx) => (
-                              <li key={`miss-${idx}`}>- {item}</li>
-                            ))}
-                          </ul>
-                        </div>
-                        <div>
-                          <p className="font-semibold text-blue-400 mb-1">What Will Help</p>
-                          <ul className="space-y-1 text-muted">
-                            {verificationResult.improvement_suggestions.slice(0, 4).map((item, idx) => (
-                              <li key={`help-${idx}`}>- {item}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      </div>
-                    </div>
-                  )}
+              {/* Recommended roles */}
+              {profile?.resume?.parsed_data?.recommended_roles && profile.resume.parsed_data.recommended_roles.length > 0 && (
+                <div>
+                  <p className="text-xs font-bold text-muted uppercase tracking-wide mb-2.5">AI Recommended Roles</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {profile.resume.parsed_data.recommended_roles.slice(0, 4).map((role, i) => (
+                      <span key={i} className="px-2.5 py-1 rounded-lg bg-accent/20 border border-accent/30 text-secondary text-xs font-semibold flex items-center gap-1">
+                        <Star className="w-3 h-3" />
+                        {role}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
 
-            {/* Right Column: History */}
-            <div className="space-y-4">
-              <div className="rounded-xl border border-border bg-card p-4">
-                <h2 className="font-semibold text-lg flex items-center gap-2 mb-3">
-                  <Clock className="w-5 h-5" />
-                  Recent Reports
+            {/* Right: History */}
+            <div className="rounded-2xl border border-border bg-card p-5">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="font-bold text-foreground flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-primary" />
+                  Session History
                 </h2>
-                {history.length === 0 ? (
-                  <div className="p-6 rounded-xl border border-border border-dashed text-center">
-                    <p className="text-sm text-muted">No interviews completed yet.</p>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {history.slice(0, 5).map((r) => (
-                      <Link
-                        href={`/report/${r.session_id}`}
-                        key={r.session_id}
-                        className="block p-4 rounded-xl bg-card border border-border hover:border-border-light transition-colors group"
-                      >
-                        <div className="flex justify-between items-start mb-2">
-                          <h3 className="font-medium text-sm group-hover:text-white transition-colors truncate pr-4">
-                            {r.role_title || "Mock Interview"}
-                          </h3>
-                          <span
-                            className={`text-sm font-bold shrink-0 ${
-                              r.overall_score >= 70
-                                ? "text-green-400"
-                                : r.overall_score >= 40
-                                ? "text-yellow-400"
-                                : "text-red-400"
-                            }`}
-                          >
-                            {r.overall_score}%
-                          </span>
-                        </div>
-                        <p className="text-xs text-muted">
-                          {new Date(r.completed_at).toLocaleDateString()}
-                        </p>
-                      </Link>
-                    ))}
-                    {history.length > 5 && (
-                      <Link
-                        href="/reports"
-                        className="block text-center text-sm text-muted hover:text-white py-2"
-                      >
-                        View all reports →
-                      </Link>
-                    )}
-                  </div>
+                {history.length > 5 && (
+                  <Link href="/reports" className="text-xs text-primary hover:underline font-semibold">
+                    View all →
+                  </Link>
                 )}
               </div>
 
-              <div className="rounded-xl border border-border bg-card/60 p-4">
-                <h3 className="font-semibold mb-2">Interview Setup</h3>
-                <p className="text-sm text-muted mb-2">
-                  Resume mode asks JD-scoped questions only. Topic mode focuses on one selected area.
-                </p>
-                <p className="text-xs text-muted">
-                  Tip: Resume-vs-JD comparison runs automatically and updates when JD or resume changes.
-                </p>
+              {history.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-10 text-center border border-dashed border-border rounded-xl">
+                  <div className="w-12 h-12 rounded-xl bg-primary/8 flex items-center justify-center mb-3">
+                    <BookOpen className="w-5 h-5 text-primary" />
+                  </div>
+                  <p className="font-semibold text-foreground text-sm mb-1">No sessions yet</p>
+                  <p className="text-xs text-muted">Start your first interview to see history here.</p>
+                  <button
+                    onClick={() => setShowStartModal(true)}
+                    className="mt-3 px-4 py-2 bg-primary text-white rounded-lg text-xs font-bold hover:bg-secondary transition-colors"
+                  >
+                    Begin Now
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2.5 max-h-[340px] overflow-y-auto pr-0.5">
+                  {history.slice(0, 8).map((r) => (
+                    <Link
+                      href={`/report/${r.session_id}`}
+                      key={r.session_id}
+                      className="flex items-center justify-between p-3.5 rounded-xl bg-background border border-border hover:border-primary/30 hover:bg-primary/2 transition-all group"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className={`w-2 h-8 rounded-full shrink-0 ${r.overall_score >= 70 ? "bg-emerald-400" : r.overall_score >= 40 ? "bg-amber-400" : "bg-rose-400"}`} />
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-foreground truncate group-hover:text-primary transition-colors">
+                            {r.role_title || "Mock Interview"}
+                          </p>
+                          <p className="text-xs text-muted">
+                            {new Date(r.completed_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className={`text-sm font-black ${r.overall_score >= 70 ? "text-emerald-500" : r.overall_score >= 40 ? "text-amber-500" : "text-rose-400"}`}>
+                          {r.overall_score}%
+                        </span>
+                        <ChevronRight className="w-4 h-4 text-muted group-hover:text-primary transition-colors" />
+                      </div>
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ── Row 2: Performance + Bot's Help ───────────────────────── */}
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+
+            {/* Topic Performance */}
+            <div className="rounded-2xl border border-border bg-card p-5">
+              <h2 className="font-bold text-foreground flex items-center gap-2 mb-4">
+                <Target className="w-4 h-4 text-primary" />
+                Topic Performance
+              </h2>
+              {topicPerf.length === 0 ? (
+                <div className="flex flex-col items-center py-8 text-center">
+                  <Trophy className="w-8 h-8 text-muted/40 mb-2" />
+                  <p className="text-sm text-muted">Complete interviews to see your topic strengths.</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {topicPerf.slice(0, 5).map((t, i) => (
+                    <div key={t.name} className="space-y-1.5">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="font-medium text-foreground flex items-center gap-2">
+                          {i === 0 && <Trophy className="w-3.5 h-3.5 text-amber-400" />}
+                          <span className="truncate max-w-[180px]">{t.name}</span>
+                        </span>
+                        <span className={`font-black text-xs ${t.avg >= 70 ? "text-emerald-500" : t.avg >= 40 ? "text-amber-500" : "text-rose-400"}`}>
+                          {t.avg}% <span className="text-muted font-normal">({t.count} test{t.count > 1 ? "s" : ""})</span>
+                        </span>
+                      </div>
+                      <div className="h-1.5 bg-border rounded-full overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all duration-700 ${t.avg >= 70 ? "bg-emerald-400" : t.avg >= 40 ? "bg-amber-400" : "bg-rose-400"}`}
+                          style={{ width: `${t.avg}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Bot's Help CTA */}
+            <div className="rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/5 via-card to-accent/5 p-5 flex flex-col">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center shadow-md shadow-primary/20">
+                  <Bot className="w-5 h-5 text-white" />
+                </div>
+                <div>
+                  <h2 className="font-bold text-foreground">Bot&apos;s Help</h2>
+                  <p className="text-xs text-muted">Your personal career coach</p>
+                </div>
+              </div>
+
+              <p className="text-sm text-muted leading-relaxed mb-4">
+                Get a deep analysis of your resume, discover your strengths and skill gaps, and receive personalized interview preparation guidance.
+              </p>
+
+              <div className="space-y-2.5 mb-5">
+                {[
+                  { icon: CheckCircle2, text: "Resume strength analysis", color: "text-emerald-500" },
+                  { icon: XCircle, text: "Skill gap identification", color: "text-rose-400" },
+                  { icon: Lightbulb, text: "Personalized improvement tips", color: "text-amber-400" },
+                ].map((item) => (
+                  <div key={item.text} className="flex items-center gap-2.5">
+                    <item.icon className={`w-4 h-4 shrink-0 ${item.color}`} />
+                    <span className="text-sm text-foreground font-medium">{item.text}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-auto flex flex-col sm:flex-row gap-2.5">
+                <Link
+                  href="/bots-help"
+                  className="flex-1 flex items-center justify-center gap-2 py-3 bg-primary hover:bg-secondary text-white rounded-xl font-bold text-sm transition-all shadow-md shadow-primary/20 active:scale-[0.97]"
+                >
+                  <Bot className="w-4 h-4" />
+                  Open Bot&apos;s Help
+                </Link>
+                <button
+                  onClick={() => setShowStartModal(true)}
+                  className="flex-1 flex items-center justify-center gap-2 py-3 border border-primary/30 text-primary hover:bg-primary/8 rounded-xl font-bold text-sm transition-all"
+                >
+                  <Play className="w-4 h-4" />
+                  Quick Start
+                </button>
               </div>
             </div>
           </div>
+
+          {/* Missing resume banner */}
+          {!profile?.resume && (
+            <div className="p-4 rounded-xl bg-primary/8 border border-primary/20 flex flex-col sm:flex-row items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-primary/15 flex items-center justify-center">
+                  <Upload className="w-4 h-4 text-primary" />
+                </div>
+                <div>
+                  <p className="font-semibold text-primary text-sm">Upload Your Resume</p>
+                  <p className="text-xs text-primary/70">We personalize your interview questions based on your resume.</p>
+                </div>
+              </div>
+              <Link
+                href="/settings"
+                className="px-4 py-2 bg-primary hover:bg-secondary text-white rounded-lg text-sm font-bold transition-colors whitespace-nowrap"
+              >
+                Go to Settings →
+              </Link>
+            </div>
+          )}
+
         </div>
       </main>
     </ProtectedRoute>

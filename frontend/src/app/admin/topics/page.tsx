@@ -6,6 +6,7 @@ import ProtectedRoute from "@/components/ProtectedRoute";
 import api from "@/lib/api";
 import { Topic } from "@/types";
 import { Tags, Plus, Pencil, Trash2, X } from "lucide-react";
+import { toast } from "sonner";
 
 export default function AdminTopicsPage() {
   const [topics, setTopics] = useState<Topic[]>([]);
@@ -64,7 +65,7 @@ export default function AdminTopicsPage() {
   const saveTopic = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!topicName.trim()) {
-      alert("Topic name is required");
+      toast.error("Topic name is required");
       return;
     }
 
@@ -85,7 +86,7 @@ export default function AdminTopicsPage() {
       resetForm();
       await fetchData();
     } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to save topic");
+      toast.error(err.response?.data?.detail || "Failed to save topic");
     } finally {
       setSaving(false);
     }
@@ -97,7 +98,7 @@ export default function AdminTopicsPage() {
       await api.delete(`/admin/topics/${topicId}`);
       await fetchData();
     } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to delete topic");
+      toast.error(err.response?.data?.detail || "Failed to delete topic");
     }
   };
 
