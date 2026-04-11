@@ -429,6 +429,9 @@ function InterviewContent() {
         setCurrentQuestion(nextQuestionText);
         setQuestionId(data.next_question.question_id);
         setQuestionNumber(data.next_question.question_number);
+        if (typeof data.next_question.total_questions === "number") {
+          setTotalQuestions(data.next_question.total_questions);
+        }
         setDifficulty(data.next_question.difficulty);
         setAnswer("");
         setSpeechFinalTranscript("");

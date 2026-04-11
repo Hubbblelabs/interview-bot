@@ -44,7 +44,7 @@ TOPIC_INITIAL_DB_QUESTIONS = 5
 TOPIC_INITIAL_ASK_COUNT = 4
 TOPIC_AI_FOLLOWUPS = 3
 TOPIC_DB_FOLLOWUPS = 2
-TOPIC_TOTAL_QUESTIONS = TOPIC_INITIAL_ASK_COUNT + TOPIC_AI_FOLLOWUPS + TOPIC_DB_FOLLOWUPS
+TOPIC_TOTAL_QUESTIONS = 10
 
 # Local process memory summary requested in workflow.
 _LOCAL_SUMMARIES: dict[str, str] = {}
@@ -261,6 +261,21 @@ def _build_resume_resilient_followup_question(session: dict, question_number: in
     ]
     template = templates[index % len(templates)]
     return template.format(n=question_number, skill=skill, role=role_title)
+
+
+def _build_topic_resilient_followup_question(session: dict, question_number: int, variant: int = 0) -> str:
+    topic_name = (session.get("role_title") or "this topic").strip()
+    index = max(0, question_number - 1) + max(0, variant)
+
+    templates = [
+        "Question {n}: Explain {topic} with a practical example from a production-like scenario.",
+        "Question {n}: What are the most common failure patterns in {topic}, and how would you detect them early?",
+        "Question {n}: Design a step-by-step implementation plan for {topic} with measurable checkpoints.",
+        "Question {n}: Compare two approaches in {topic}, including trade-offs in scalability, latency, and maintainability.",
+        "Question {n}: If a {topic} solution regressed after deployment, how would you triage and recover safely?",
+    ]
+    template = templates[index % len(templates)]
+    return template.format(n=question_number, topic=topic_name)
 
 
 async def _enqueue_resume_followup_with_fallback(
@@ -1569,27 +1584,47 @@ async def _post_submit_topic_processing(
         session = await redis.hgetall(f"session:{session_id}")
         if not session:
             return
+
+        max_questions = max(
+            TOPIC_TOTAL_QUESTIONS,
+            _safe_int(session.get("max_questions", TOPIC_TOTAL_QUESTIONS)),
+        )
+        generated_count = _safe_int(session.get("generated_count", 0))
+        remaining_needed = max(0, max_questions - generated_count)
+
+        if remaining_needed <= 0:
+            await redis.hset(f"session:{session_id}", mapping={"topic_followups_generated": "1"})
+            await db[SESSIONS].update_one(
+                {"session_id": session_id},
+                {"$set": {"topic_followups_generated": True, "max_questions": max_questions}},
+            )
+            return
+
         if session.get("topic_followups_generated", "0") == "1":
             return
 
         qa_pairs = await get_session_qa(session_id)
         excluded_questions = await _get_session_question_texts(redis, session_id)
 
+        ai_target = min(TOPIC_AI_FOLLOWUPS, remaining_needed)
         ai_items = await generate_topic_followup_batch(
             topic_name=session.get("role_title", "Topic Interview"),
             qa_pairs=qa_pairs,
             excluded_questions=excluded_questions,
-            count=TOPIC_AI_FOLLOWUPS,
+            count=ai_target,
         )
+        db_target = max(0, remaining_needed - len(ai_items))
         db_items = await _sample_topic_questions(
             db=db,
             topic_id=session.get("topic_id", ""),
             excluded_questions=excluded_questions + [i.get("question", "") for i in ai_items],
-            limit=TOPIC_DB_FOLLOWUPS,
+            limit=db_target,
         )
 
         topic_added = 0
-        for item in ai_items + db_items:
+        ai_added = 0
+        db_added = 0
+        for item in ai_items:
             qid = await enqueue_question(
                 redis=redis,
                 session_id=session_id,
@@ -1601,23 +1636,69 @@ async def _post_submit_topic_processing(
             )
             if qid:
                 topic_added += 1
+                ai_added += 1
 
-        generated_count = _safe_int(session.get("generated_count", 0)) + topic_added
+        for item in db_items:
+            qid = await enqueue_question(
+                redis=redis,
+                session_id=session_id,
+                question=item.get("question", ""),
+                difficulty=item.get("difficulty", "medium"),
+                category=item.get("category", session.get("role_title", "topic")),
+                ttl_seconds=SESSION_TTL,
+                max_queue_size=MAX_QUEUE_SIZE,
+            )
+            if qid:
+                topic_added += 1
+                db_added += 1
+
+        fallback_added = 0
+        fallback_variants = max(10, remaining_needed * 4)
+        for variant in range(fallback_variants):
+            if topic_added >= remaining_needed:
+                break
+
+            next_question_number = generated_count + topic_added + 1
+            fallback_text = _build_topic_resilient_followup_question(
+                session=session,
+                question_number=next_question_number,
+                variant=variant,
+            )
+            qid = await enqueue_question(
+                redis=redis,
+                session_id=session_id,
+                question=fallback_text,
+                difficulty="medium",
+                category="topic-fallback",
+                ttl_seconds=SESSION_TTL,
+                max_queue_size=MAX_QUEUE_SIZE,
+            )
+            if qid:
+                topic_added += 1
+                fallback_added += 1
+
+        generated_count += topic_added
         await _apply_generation_metric_delta(
             db=db,
             redis=redis,
             session_id=session_id,
             session=session,
             metrics_delta={
-                "gemini_calls": 1,
-                "gemini_questions": len(ai_items),
-                "bank_questions": len(db_items),
-                "bank_shortfall": 0,
+                "gemini_calls": 1 if ai_target > 0 else 0,
+                "gemini_questions": ai_added,
+                "bank_questions": db_added + fallback_added,
+                "bank_shortfall": max(0, remaining_needed - topic_added),
                 "generation_batches": 1,
             },
             generated_count=generated_count,
-            extra_redis_fields={"topic_followups_generated": "1"},
-            extra_db_fields={"topic_followups_generated": True},
+            extra_redis_fields={
+                "topic_followups_generated": "1",
+                "max_questions": str(max_questions),
+            },
+            extra_db_fields={
+                "topic_followups_generated": True,
+                "max_questions": max_questions,
+            },
         )
 
         await flush_backlog_to_queue(
@@ -1711,6 +1792,14 @@ async def submit_answer(session_id: str, question_id: str, answer: str) -> dict:
 
     if interview_type == "resume" and max_questions < RESUME_MAX_QUESTIONS:
         max_questions = RESUME_MAX_QUESTIONS
+        await redis.hset(f"session:{session_id}", mapping={"max_questions": str(max_questions)})
+        await db[SESSIONS].update_one(
+            {"session_id": session_id},
+            {"$set": {"max_questions": max_questions}},
+        )
+
+    if interview_type == "topic" and max_questions < TOPIC_TOTAL_QUESTIONS:
+        max_questions = TOPIC_TOTAL_QUESTIONS
         await redis.hset(f"session:{session_id}", mapping={"max_questions": str(max_questions)})
         await db[SESSIONS].update_one(
             {"session_id": session_id},
@@ -1819,6 +1908,25 @@ async def submit_answer(session_id: str, question_id: str, answer: str) -> dict:
             generated_count=generated_count,
         )
 
+        await flush_backlog_to_queue(
+            redis=redis,
+            session_id=session_id,
+            ttl_seconds=SESSION_TTL,
+            max_queue_size=MAX_QUEUE_SIZE,
+        )
+        next_question_id, q_data = await pop_next_question(redis, session_id)
+
+    if (
+        not next_question_id
+        and interview_type == "topic"
+        and answered_count < max_questions
+    ):
+        # Topic follow-up generation runs in background, so synchronously top-up once
+        # before concluding interview to avoid premature completion around Q4.
+        await _post_submit_topic_processing(
+            session_id=session_id,
+            answered_count=answered_count,
+        )
         await flush_backlog_to_queue(
             redis=redis,
             session_id=session_id,
