@@ -142,6 +142,7 @@ function InterviewContent() {
   const audioChunksRef = useRef<BlobPart[]>([]);
   const hasSpokenRef = useRef(false);
   const didInitVoiceRef = useRef(false);
+  const reportPrefetchStartedRef = useRef(false);
   const preparedQuestionRef = useRef("");
   const queuedPrefetchedTokenRef = useRef("");
   const currentQuestionToken = `${questionId || ""}::${currentQuestion || ""}`;
@@ -243,6 +244,15 @@ function InterviewContent() {
     };
     loadVoiceFromProfile();
   }, []);
+
+  useEffect(() => {
+    if (!isComplete || !sessionId || reportPrefetchStartedRef.current) return;
+    reportPrefetchStartedRef.current = true;
+    void api.get(`/interview/report?session_id=${sessionId}`).catch(() => {
+      // Keep button flow as manual fallback if background prefetch fails.
+      reportPrefetchStartedRef.current = false;
+    });
+  }, [isComplete, sessionId]);
 
   useEffect(() => {
     if (!timerEnabled || isComplete || isTimeUp) return;

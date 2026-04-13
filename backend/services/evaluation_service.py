@@ -23,6 +23,20 @@ def _safe_int(value, default: int = 0) -> int:
         return default
 
 
+def _is_placeholder_report(report: dict) -> bool:
+    strengths = [str(item).strip().lower() for item in (report.get("strengths") or []) if str(item).strip()]
+    weaknesses = [str(item).strip().lower() for item in (report.get("weaknesses") or []) if str(item).strip()]
+    recommendations = [str(item).strip().lower() for item in (report.get("recommendations") or []) if str(item).strip()]
+
+    if any("unable to evaluate" in item for item in strengths + weaknesses):
+        return True
+    if any("please retry the interview" in item for item in recommendations):
+        return True
+    if not (report.get("detailed_scores") or []):
+        return True
+    return False
+
+
 async def generate_report(session_id: str, user_id: str) -> dict:
     """Generate final evaluation report from Redis Q&A data using Gemini."""
     db = get_db()
@@ -30,7 +44,7 @@ async def generate_report(session_id: str, user_id: str) -> dict:
 
     # Check if report already exists
     existing = await db[RESULTS].find_one({"session_id": session_id})
-    if existing:
+    if existing and not _is_placeholder_report(existing):
         existing["id"] = str(existing["_id"])
         del existing["_id"]
         return _json_safe(existing)
@@ -51,6 +65,25 @@ async def generate_report(session_id: str, user_id: str) -> dict:
 
     # Get all Q&A from Redis
     qa_pairs = await get_session_qa(session_id)
+    if not qa_pairs:
+        archived_answers = await db[ANSWERS].find(
+            {"session_id": session_id, "user_id": user_id}
+        ).sort("stored_at", 1).to_list(length=200)
+        for item in archived_answers:
+            question = (item.get("question") or "").strip()
+            answer = (item.get("answer") or "").strip()
+            if not question or not answer:
+                continue
+            qa_pairs.append(
+                {
+                    "question_id": item.get("question_id") or "",
+                    "question": question,
+                    "answer": answer,
+                    "difficulty": item.get("difficulty", "medium"),
+                    "category": item.get("category", "general"),
+                }
+            )
+
     if not qa_pairs:
         raise ValueError("No Q&A data found for this session")
 
@@ -80,21 +113,42 @@ async def generate_report(session_id: str, user_id: str) -> dict:
         },
         "completed_at": utc_now(),
     }
-    inserted = await db[RESULTS].insert_one(result_doc)
+    if existing:
+        await db[RESULTS].update_one(
+            {"_id": existing["_id"]},
+            {"$set": result_doc},
+        )
+        result_doc_id = str(existing["_id"])
+    else:
+        inserted = await db[RESULTS].insert_one(result_doc)
+        result_doc_id = str(inserted.inserted_id)
 
     # Store final answers in MongoDB
     for qa in qa_pairs:
-        answer_doc = {
+        question_id = (qa.get("question_id") or "").strip()
+        upsert_filter = {
             "session_id": session_id,
             "user_id": user_id,
-            "question_id": qa["question_id"],
-            "question": qa["question"],
-            "answer": qa["answer"],
-            "difficulty": qa["difficulty"],
-            "category": qa["category"],
-            "stored_at": utc_now(),
         }
-        await db[ANSWERS].insert_one(answer_doc)
+        if question_id:
+            upsert_filter["question_id"] = question_id
+        else:
+            upsert_filter["question"] = qa.get("question", "")
+
+        await db[ANSWERS].update_one(
+            upsert_filter,
+            {
+                "$set": {
+                    "question_id": question_id,
+                    "question": qa.get("question", ""),
+                    "answer": qa.get("answer", ""),
+                    "difficulty": qa.get("difficulty", "medium"),
+                    "category": qa.get("category", "general"),
+                    "stored_at": utc_now(),
+                }
+            },
+            upsert=True,
+        )
 
     # Clean up Redis session data
     question_ids = await redis.lrange(f"session:{session_id}:questions", 0, -1)
@@ -133,5 +187,5 @@ async def generate_report(session_id: str, user_id: str) -> dict:
 
     cleanup_interview_local_state(session_id)
 
-    result_doc["id"] = str(inserted.inserted_id)
+    result_doc["id"] = result_doc_id
     return _json_safe(result_doc)

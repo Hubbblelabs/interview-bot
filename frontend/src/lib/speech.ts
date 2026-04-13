@@ -90,6 +90,17 @@ const normalizeVoiceGender = (value?: SpeechVoiceGender): "male" | "female" => {
   return value === "male" ? "male" : "female";
 };
 
+const normalizeSpokenText = (value: string) => {
+  let text = (value || "").trim();
+  if (!text) return "";
+
+  const prefixPattern = /^\s*(?:question|q)\s*#?\s*\d+(?:\s*of\s*\d+)?\s*[:\-)\.]\s*/i;
+  while (prefixPattern.test(text)) {
+    text = text.replace(prefixPattern, "").trim();
+  }
+  return text;
+};
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const getErrorStatus = (error: unknown): number | undefined => {
@@ -284,7 +295,7 @@ const fetchBackendSpeechAudio = async (
 };
 
 export const prefetchSpeech = (text: string, options?: SpeakOptions) => {
-  const content = (text || "").trim();
+  const content = normalizeSpokenText(text);
   if (!content) return;
   const backendVoiceGender = normalizeVoiceGender(options?.voiceGender);
   void fetchBackendSpeechAudio(content, backendVoiceGender, options?.style).catch(() => {
@@ -293,7 +304,7 @@ export const prefetchSpeech = (text: string, options?: SpeakOptions) => {
 };
 
 export const prepareSpeech = async (text: string, options?: SpeakOptions) => {
-  const content = (text || "").trim();
+  const content = normalizeSpokenText(text);
   if (!content) return;
   const backendVoiceGender = normalizeVoiceGender(options?.voiceGender);
   await fetchBackendSpeechAudio(content, backendVoiceGender, options?.style);
@@ -455,7 +466,7 @@ const speakWithBrowserFallback = async (
 };
 
 export const speak = (text: string, onEnd?: () => void, options?: SpeakOptions) => {
-  const content = (text || "").trim();
+  const content = normalizeSpokenText(text);
   if (!content) {
     if (onEnd) onEnd();
     return;

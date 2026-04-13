@@ -11,11 +11,13 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 class Settings(BaseSettings):
     # App
     APP_ENV: str = "production"
+    APP_HOST: str = "0.0.0.0"
     APP_PORT: int = 8000
 
     # Gemini
     GEMINI_API_KEY: str
     GEMINI_MODEL: str = "gemini-2.5-flash"
+    GEMINI_FALLBACK_MODELS: str = ""
 
     # MongoDB Atlas
     MONGO_URI: str
