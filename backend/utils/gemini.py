@@ -14,6 +14,29 @@ settings = get_settings()
 client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
 
+def _extract_response_text(response) -> str:
+    text = (getattr(response, "text", None) or "").strip()
+    if text:
+        return text
+
+    try:
+        candidates = getattr(response, "candidates", None) or []
+        for candidate in candidates:
+            content = getattr(candidate, "content", None)
+            parts = getattr(content, "parts", None) or []
+            gathered = []
+            for part in parts:
+                part_text = getattr(part, "text", None)
+                if isinstance(part_text, str) and part_text.strip():
+                    gathered.append(part_text.strip())
+            if gathered:
+                return "\n".join(gathered).strip()
+    except Exception:
+        return ""
+
+    return ""
+
+
 def _is_transient_gemini_error(error: Exception) -> bool:
     message = str(error or "").lower()
     transient_markers = [
@@ -26,6 +49,26 @@ def _is_transient_gemini_error(error: Exception) -> bool:
         "timeout",
     ]
     return any(marker in message for marker in transient_markers)
+
+
+def _candidate_gemini_models() -> list[str]:
+    configured = [
+        item.strip()
+        for item in (getattr(settings, "GEMINI_FALLBACK_MODELS", "") or "").split(",")
+        if item and item.strip()
+    ]
+    defaults = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-flash-latest"]
+
+    ordered = [settings.GEMINI_MODEL, *configured, *defaults]
+    seen: set[str] = set()
+    unique: list[str] = []
+    for model in ordered:
+        key = (model or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(key)
+    return unique
 
 
 async def call_gemini(
@@ -43,34 +86,51 @@ async def call_gemini(
     config["response_mime_type"] = "application/json"
 
     last_error = None
+    model_candidates = _candidate_gemini_models()
 
     attempts = max(1, int(max_attempts or 1))
     for attempt in range(attempts):
-        try:
-            def _invoke():
-                return client.models.generate_content(
-                    model=settings.GEMINI_MODEL,
-                    contents=prompt,
-                    config=config if config else None,
-                )
+        for model_name in model_candidates:
+            try:
+                def _invoke():
+                    return client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=config if config else None,
+                    )
 
-            if request_timeout_seconds and request_timeout_seconds > 0:
-                response = await asyncio.wait_for(
-                    asyncio.to_thread(_invoke),
-                    timeout=request_timeout_seconds,
-                )
-            else:
-                response = await asyncio.to_thread(_invoke)
+                if request_timeout_seconds and request_timeout_seconds > 0:
+                    response = await asyncio.wait_for(
+                        asyncio.to_thread(_invoke),
+                        timeout=request_timeout_seconds,
+                    )
+                else:
+                    response = await asyncio.to_thread(_invoke)
 
-            elapsed_ms = (perf_counter() - started_at) * 1000.0
-            await record_latency("gemini_ms", elapsed_ms)
-            return (response.text or "").strip()
-        except Exception as exc:
-            last_error = exc
-            if _is_transient_gemini_error(exc) and attempt < attempts - 1:
-                await asyncio.sleep(0.8 * (attempt + 1))
-                continue
-            break
+                response_text = _extract_response_text(response)
+                if not response_text:
+                    raise RuntimeError("Gemini returned an empty response")
+
+                elapsed_ms = (perf_counter() - started_at) * 1000.0
+                await record_latency("gemini_ms", elapsed_ms)
+                return response_text
+            except Exception as exc:
+                last_error = exc
+                # Try next model candidate immediately on transient/unavailable errors.
+                if _is_transient_gemini_error(exc):
+                    continue
+
+                # Model-not-found style errors should try the next candidate too.
+                message = str(exc or "").lower()
+                if "not found" in message or "unsupported" in message:
+                    continue
+
+                break
+
+        if _is_transient_gemini_error(last_error) and attempt < attempts - 1:
+            await asyncio.sleep(0.8 * (attempt + 1))
+            continue
+        break
 
     elapsed_ms = (perf_counter() - started_at) * 1000.0
     await record_latency("gemini_ms", elapsed_ms)
@@ -705,53 +765,158 @@ No markdown, no extra text."""
 
 async def evaluate_interview(questions_and_answers: list, role_title: str) -> dict:
     """Batch evaluate all interview Q&A pairs using Gemini."""
-    qa_text = ""
-    for i, qa in enumerate(questions_and_answers, 1):
-        qa_text += f"\nQ{i}: {qa['question']}\nA{i}: {qa['answer']}\n"
 
-    prompt_template = PromptTemplate.from_template(
-                """You are a strict technical interviewer evaluating a candidate for the role: {role_title}.
+    def _clamp_score(value, default: int = 50) -> int:
+        try:
+            score = int(value)
+        except Exception:
+            score = default
+        return max(0, min(100, score))
 
-Here are the interview questions and the candidate's answers:
-{qa_text}
+    def _fallback_item_score(answer: str) -> int:
+        text = (answer or "").strip().lower()
+        words = len(text.split())
+        if words < 10:
+            return 35
+        if words < 25:
+            return 52
+        if any(marker in text for marker in ["not sure", "maybe", "i think", "dont know", "don't know"]):
+            return 50
+        if words > 90:
+            return 74
+        return 64
 
-Scoring policy (concept-first, strict):
-1. Score primarily on conceptual correctness, depth, and reasoning quality.
-2. Do NOT reward answer length, confidence, or communication style when concepts are wrong.
-3. Penalize vague, hand-wavy, or uncertain answers.
-4. Penalize technically incorrect claims even if explanation sounds fluent.
-5. Reward precise mechanisms, trade-offs, edge cases, and debugging logic.
-
-Score rubric per answer:
-- 90-100: conceptually correct, deep, and accurate with strong reasoning
-- 70-89: mostly correct with minor conceptual gaps
-- 50-69: partially correct but misses key mechanisms
-- 30-49: shallow/vague with major conceptual gaps
-- 0-29: incorrect or off-topic
-
-Return a JSON object with:
-- "overall_score": integer from 0-100
-- "detailed_scores": list of objects, each with:
-    - "question": the question text
-    - "answer": the answer text
-    - "score": integer 0-100
-    - "feedback": concise concept-focused feedback for this answer
-- "strengths": list of 3-5 strength areas
-- "weaknesses": list of 3-5 concept gaps
-- "recommendations": list of 3-5 actionable concept-improvement recommendations
-
-Return ONLY valid JSON, no markdown formatting."""
-        )
-    prompt = prompt_template.format(role_title=role_title, qa_text=qa_text)
-
-    try:
-        result = _extract_json_object(await call_gemini(prompt))
-        return json.loads(result)
-    except Exception:
+    if not questions_and_answers:
         return {
             "overall_score": 50,
             "detailed_scores": [],
-            "strengths": ["Unable to evaluate"],
-            "weaknesses": ["Unable to evaluate"],
-            "recommendations": ["Please retry the interview"],
+            "strengths": ["No answers were available for evaluation"],
+            "weaknesses": ["No answers were available for evaluation"],
+            "recommendations": ["Complete the interview and generate report again"],
         }
+
+    compact_qa = []
+    for i, qa in enumerate(questions_and_answers, 1):
+        question = (qa.get("question") or "").strip()
+        answer = (qa.get("answer") or "").strip()
+        compact_qa.append(
+            {
+                "index": i,
+                "question": question[:260],
+                "answer": answer[:520],
+            }
+        )
+
+    payload = {
+        "role_title": role_title,
+        "question_count": len(compact_qa),
+        "qa": compact_qa,
+    }
+
+    prompt_template = PromptTemplate.from_template(
+        """You are a strict technical interviewer evaluating a candidate for role: {role_title}.
+
+Input JSON:
+{payload}
+
+Scoring policy:
+1) Score conceptual correctness and depth, not verbosity.
+2) Penalize vague, uncertain, or incorrect technical claims.
+3) Reward concrete reasoning, trade-offs, and debugging clarity.
+
+Return ONLY valid JSON object with this exact schema:
+{{
+  "overall_score": 0-100 integer,
+  "per_question": [
+    {{"index": 1-based integer, "score": 0-100 integer, "feedback": "short concept-focused feedback"}}
+  ],
+  "strengths": ["3 to 5 concise points"],
+  "weaknesses": ["3 to 5 concise points"],
+  "recommendations": ["3 to 5 actionable points"]
+}}
+
+Rules:
+- per_question must include every question index from 1..question_count exactly once.
+- Do NOT echo full question or answer text in output.
+- Keep each feedback under 220 characters.
+"""
+    )
+    prompt = prompt_template.format(
+        role_title=role_title,
+        payload=json.dumps(payload, ensure_ascii=True),
+    )
+
+    parsed = None
+    try:
+        result = _extract_json_object(
+            await call_gemini(
+                prompt,
+                max_attempts=3,
+                request_timeout_seconds=45,
+            )
+        )
+        parsed = json.loads(result)
+    except Exception:
+        parsed = None
+
+    score_map: dict[int, tuple[int, str]] = {}
+    if isinstance(parsed, dict):
+        for item in parsed.get("per_question", []) or []:
+            if not isinstance(item, dict):
+                continue
+            idx = item.get("index")
+            try:
+                index = int(idx)
+            except Exception:
+                continue
+            if index < 1 or index > len(questions_and_answers):
+                continue
+            score = _clamp_score(item.get("score"), _fallback_item_score(questions_and_answers[index - 1].get("answer", "")))
+            feedback = (item.get("feedback") or "").strip() or "Answer reviewed with focus on conceptual correctness."
+            score_map[index] = (score, feedback)
+
+    detailed_scores = []
+    for index, qa in enumerate(questions_and_answers, 1):
+        fallback_score = _fallback_item_score(qa.get("answer", ""))
+        score, feedback = score_map.get(
+            index,
+            (fallback_score, "Could not derive detailed AI feedback for this answer; score based on response quality signals."),
+        )
+        detailed_scores.append(
+            {
+                "question": qa.get("question", ""),
+                "answer": qa.get("answer", ""),
+                "score": score,
+                "feedback": feedback,
+            }
+        )
+
+    if isinstance(parsed, dict):
+        overall_score = _clamp_score(parsed.get("overall_score"), int(round(sum(item["score"] for item in detailed_scores) / max(1, len(detailed_scores)))))
+        strengths = [str(s).strip() for s in (parsed.get("strengths") or []) if str(s).strip()][:5]
+        weaknesses = [str(w).strip() for w in (parsed.get("weaknesses") or []) if str(w).strip()][:5]
+        recommendations = [str(r).strip() for r in (parsed.get("recommendations") or []) if str(r).strip()][:5]
+
+        if not strengths:
+            strengths = ["Shows baseline understanding in parts of the discussion"]
+        if not weaknesses:
+            weaknesses = ["Needs deeper concept-level reasoning and sharper technical precision"]
+        if not recommendations:
+            recommendations = ["Practice answering with mechanisms, trade-offs, and one concrete production example per question"]
+
+        return {
+            "overall_score": overall_score,
+            "detailed_scores": detailed_scores,
+            "strengths": strengths,
+            "weaknesses": weaknesses,
+            "recommendations": recommendations,
+        }
+
+    fallback_overall = int(round(sum(item["score"] for item in detailed_scores) / max(1, len(detailed_scores))))
+    return {
+        "overall_score": _clamp_score(fallback_overall, 50),
+        "detailed_scores": detailed_scores,
+        "strengths": ["Attempted responses for all interview prompts"],
+        "weaknesses": ["Detailed AI evaluation was unavailable for this run"],
+        "recommendations": ["Retry report generation to get full AI feedback"],
+    }

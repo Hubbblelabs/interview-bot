@@ -9,14 +9,32 @@ QUESTION_QUEUE_SUFFIX = "question_queue"
 QUESTION_BACKLOG_SUFFIX = "question_backlog"
 CONTEXT_CACHE_SUFFIX = "context_cache"
 ASKED_SET_SUFFIX = "asked_questions_set"
+QUESTION_PREFIX_RE = re.compile(
+    r"^\s*(?:question|q)\s*#?\s*\d+(?:\s*of\s*\d+)?\s*[\:\-\)\.]\s*",
+    re.IGNORECASE,
+)
 
 
 def _key(session_id: str, suffix: str) -> str:
     return f"session:{session_id}:{suffix}"
 
 
+def normalize_question_text(text: str) -> str:
+    value = (text or "").strip()
+    if not value:
+        return ""
+
+    while True:
+        updated = QUESTION_PREFIX_RE.sub("", value).strip()
+        if updated == value:
+            break
+        value = updated
+
+    return value
+
+
 def question_fingerprint(text: str) -> str:
-    value = (text or "").strip().lower()
+    value = normalize_question_text(text).lower()
     value = re.sub(r"[^a-z0-9\s]", " ", value)
     value = re.sub(r"\s+", " ", value).strip()
     return value
@@ -61,6 +79,7 @@ async def _append_question_object(
     category: str,
     ttl_seconds: int,
 ) -> str:
+    normalized_question = normalize_question_text(question)
     qid = generate_id()
     q_key = f"session:{session_id}:q:{qid}"
 
@@ -68,7 +87,7 @@ async def _append_question_object(
         q_key,
         mapping={
             "question_id": qid,
-            "question": question,
+            "question": normalized_question,
             "difficulty": difficulty or "medium",
             "category": category or "general",
         },
@@ -90,7 +109,7 @@ async def enqueue_question(
     ttl_seconds: int = 7200,
     max_queue_size: int = 3,
 ) -> Optional[str]:
-    text = (question or "").strip()
+    text = normalize_question_text(question)
     if not text:
         return None
 

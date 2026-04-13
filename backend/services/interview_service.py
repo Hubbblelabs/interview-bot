@@ -21,6 +21,7 @@ from services.queue_service import (
     flush_backlog_to_queue,
     get_recent_context_items,
     mark_question_asked,
+    normalize_question_text,
     peek_next_question,
     pop_next_question,
     push_context_item,
@@ -45,11 +46,28 @@ TOPIC_INITIAL_ASK_COUNT = 4
 TOPIC_AI_FOLLOWUPS = 3
 TOPIC_DB_FOLLOWUPS = 2
 TOPIC_TOTAL_QUESTIONS = 10
+MAX_SAME_TOPIC_FOLLOWUPS = 2
+THIRD_FOLLOWUP_NEED_SCORE = 95
 
 # Local process memory summary requested in workflow.
 _LOCAL_SUMMARIES: dict[str, str] = {}
 _PREGEN_IN_FLIGHT: set[str] = set()
 _POST_SUBMIT_LOCKS: dict[str, asyncio.Lock] = {}
+_QUESTION_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "how", "if", "in", "into",
+    "is", "it", "of", "on", "or", "that", "the", "this", "to", "using", "what", "when", "with", "would",
+}
+_GENERIC_SOFT_SKILL_KEYS = {
+    "problem solving",
+    "analytical skills",
+    "communication",
+    "communication skills",
+    "teamwork",
+    "leadership",
+    "adaptability",
+    "time management",
+    "critical thinking",
+}
 
 
 def _safe_json_list(value: str) -> list:
@@ -65,6 +83,47 @@ def _question_fingerprint(text: str) -> str:
     base = re.sub(r"[^a-z0-9\s]", " ", base)
     base = re.sub(r"\s+", " ", base).strip()
     return base
+
+
+def _question_token_set(text: str) -> set[str]:
+    key = _question_fingerprint(text)
+    tokens = [token for token in key.split() if token and token not in _QUESTION_STOPWORDS]
+    return set(tokens)
+
+
+def _is_question_too_similar(candidate: str, recent_questions: list[str]) -> bool:
+    candidate_key = _question_fingerprint(candidate)
+    if not candidate_key:
+        return True
+
+    candidate_tokens = _question_token_set(candidate)
+    candidate_opening = " ".join(candidate_key.split()[:6])
+
+    for text in (recent_questions or [])[-5:]:
+        other_key = _question_fingerprint(text)
+        if not other_key:
+            continue
+        if candidate_key == other_key:
+            return True
+
+        other_opening = " ".join(other_key.split()[:6])
+        if candidate_opening and candidate_opening == other_opening:
+            return True
+
+        other_tokens = _question_token_set(text)
+        if not candidate_tokens or not other_tokens:
+            continue
+
+        intersection = len(candidate_tokens & other_tokens)
+        union = len(candidate_tokens | other_tokens)
+        if union <= 0:
+            continue
+
+        jaccard = intersection / union
+        if jaccard >= 0.72:
+            return True
+
+    return False
 
 
 def _unique_question_items(items: list[dict], *, excluded_questions: list[str], limit: int) -> list[dict]:
@@ -102,6 +161,15 @@ def _safe_int(value, default: int = 0) -> int:
         return int(value)
     except Exception:
         return default
+
+
+def _safe_score_0_100(value, default: int = 0) -> int:
+    score = _safe_int(value, default)
+    if score < 0:
+        return 0
+    if score > 100:
+        return 100
+    return score
 
 
 def _normalize_voice_gender(value: str | None) -> str:
@@ -162,6 +230,123 @@ def _normalize_bank_difficulty(value: str) -> str:
     if difficulty == "easy":
         return "medium"
     return difficulty
+
+
+def _resume_skill_pool(session: dict) -> list[str]:
+    jd_skills = normalize_skill_list(_safe_json_list(session.get("jd_required_skills", "[]")))
+    focus_skills = normalize_skill_list(_safe_json_list(session.get("skills", "[]")))
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for skill in jd_skills + focus_skills:
+        key = _question_fingerprint(skill)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        ordered.append(skill)
+
+    concrete = [skill for skill in ordered if _question_fingerprint(skill) not in _GENERIC_SOFT_SKILL_KEYS]
+    if len(concrete) >= 2:
+        return concrete
+
+    return ordered or ["core technical concepts"]
+
+
+def _infer_focus_skill_from_question(question_text: str, skill_pool: list[str]) -> str | None:
+    normalized_question = _question_fingerprint(question_text)
+    if not normalized_question:
+        return None
+
+    best_skill = None
+    best_score = 0
+
+    for skill in skill_pool:
+        normalized_skill = _question_fingerprint(skill)
+        if not normalized_skill:
+            continue
+
+        tokens = [token for token in normalized_skill.split() if len(token) >= 3]
+        if not tokens:
+            tokens = normalized_skill.split()
+
+        score = sum(1 for token in tokens if token and token in normalized_question)
+        if normalized_skill in normalized_question:
+            score = max(score, len(tokens) + 1)
+
+        if score > best_score:
+            best_score = score
+            best_skill = skill
+
+    return best_skill if best_score > 0 else None
+
+
+def _recent_focus_streak(question_texts: list[str], skill_pool: list[str]) -> tuple[str | None, int]:
+    active_skill = None
+    streak = 0
+
+    for text in reversed(question_texts):
+        skill = _infer_focus_skill_from_question(text, skill_pool)
+        if not skill:
+            break
+
+        if active_skill is None:
+            active_skill = skill
+            streak = 1
+            continue
+
+        if _question_fingerprint(skill) == _question_fingerprint(active_skill):
+            streak += 1
+            continue
+
+        break
+
+    return active_skill, streak
+
+
+def _pick_alternate_focus_skill(skill_pool: list[str], current_skill: str | None, seed: int) -> str | None:
+    if not skill_pool:
+        return None
+
+    if current_skill:
+        current_key = _question_fingerprint(current_skill)
+        alternatives = [skill for skill in skill_pool if _question_fingerprint(skill) != current_key]
+        if alternatives:
+            return alternatives[max(0, seed) % len(alternatives)]
+
+    return skill_pool[max(0, seed) % len(skill_pool)]
+
+
+def _apply_resume_followup_policy(
+    *,
+    skill_pool: list[str],
+    recent_focus_topic: str | None,
+    same_topic_streak: int,
+    suggested_question: str,
+    suggested_topic: str | None,
+    followup_need_score: int,
+    answered_count: int,
+) -> tuple[str, str | None]:
+    follow_text = (suggested_question or "").strip()
+    topic = (suggested_topic or "").strip()
+
+    if not topic and follow_text:
+        inferred = _infer_focus_skill_from_question(follow_text, skill_pool)
+        if inferred:
+            topic = inferred
+
+    topic_key = _question_fingerprint(topic)
+    recent_key = _question_fingerprint(recent_focus_topic or "")
+
+    if (
+        same_topic_streak >= MAX_SAME_TOPIC_FOLLOWUPS
+        and topic_key
+        and recent_key
+        and topic_key == recent_key
+        and _safe_score_0_100(followup_need_score) < THIRD_FOLLOWUP_NEED_SCORE
+    ):
+        return "", _pick_alternate_focus_skill(skill_pool, recent_focus_topic, answered_count)
+
+    return follow_text, None
 
 
 def _avg_recent_answer_words(qa_pairs: list, window: int = 3) -> int:
@@ -235,32 +420,68 @@ async def _get_recent_user_questions(db, user_id: str, limit: int = 40) -> list[
 
 
 def _build_resume_intro_question(role_title: str, jd_title: str) -> str:
-    title = (jd_title or "the selected job description").strip()
     role = (role_title or "this role").strip()
+    title = (jd_title or "").strip()
+
+    def _normalized_key(value: str) -> str:
+        key = re.sub(r"[^a-z0-9\s]", " ", (value or "").lower())
+        key = re.sub(r"\s+", " ", key).strip()
+        for prefix in ("the ", "an ", "a "):
+            if key.startswith(prefix):
+                key = key[len(prefix):].strip()
+                break
+        return key
+
+    role_clean = re.sub(r"\s+", " ", role).strip()
+    if role_clean.lower().startswith("the "):
+        role_clean = role_clean[4:].strip()
+    role_phrase = f"the {role_clean}" if role_clean.lower().endswith(" role") else f"the {role_clean} role"
+
+    role_key = _normalized_key(role_clean)
+    title_key = _normalized_key(title)
+    is_generic_title = title_key in {
+        "",
+        "selected job description",
+        role_key,
+        f"{role_key} role",
+    }
+
+    if is_generic_title:
+        return f"Introduce yourself and explain how your background aligns with {role_phrase}."
+
+    title_phrase = title if title.lower().startswith(("the ", "an ", "a ")) else f"the {title}"
     return (
-        f"Introduce yourself and explain how your background aligns with {role} "
-        f"for {title}."
+        f"Introduce yourself and explain how your background aligns with {role_phrase} "
+        f"in {title_phrase} job description."
     )
 
 
-def _build_resume_resilient_followup_question(session: dict, question_number: int, variant: int = 0) -> str:
+def _build_resume_resilient_followup_question(
+    session: dict,
+    question_number: int,
+    variant: int = 0,
+    focus_skill: str | None = None,
+) -> str:
     role_title = (session.get("role_title") or "this role").strip()
-    jd_skills = _safe_json_list(session.get("jd_required_skills", "[]"))
-    focus_skills = _safe_json_list(session.get("skills", "[]"))
-    skill_pool = jd_skills or focus_skills or ["core technical concepts"]
+    skill_pool = _resume_skill_pool(session)
 
     index = max(0, question_number - 1) + max(0, variant)
-    skill = skill_pool[index % len(skill_pool)]
+    skill = (focus_skill or "").strip() or skill_pool[index % len(skill_pool)]
 
     templates = [
-        "Question {n}: Describe a real project where you applied {skill} for {role}. What constraints and trade-offs shaped your design?",
-        "Question {n}: If {skill} failed in production for a {role} workflow, how would you debug it step by step?",
-        "Question {n}: Explain how you would test and validate a solution using {skill} before shipping it for {role}.",
-        "Question {n}: Compare two approaches for {skill} in a {role} context and justify the final choice.",
-        "Question {n}: Design an improvement plan to make your {skill} implementation more scalable and reliable for {role}.",
+        "Describe a real project where you applied {skill} for {role}. What constraints and trade-offs shaped your design?",
+        "If {skill} failed in production for a {role} workflow, how would you debug it step by step?",
+        "Explain how you would test and validate a solution using {skill} before shipping it for {role}.",
+        "Compare two approaches for {skill} in a {role} context and justify the final choice.",
+        "Design an improvement plan to make your {skill} implementation more scalable and reliable for {role}.",
+        "Your {role} service using {skill} has intermittent latency spikes. How would you investigate and stabilize it?",
+        "During code review, what risks would you look for in a {skill} implementation for {role}, and why?",
+        "How would you design rollback and observability for a feature centered on {skill} in {role}?",
+        "Assume two engineers propose different {skill} strategies for {role}. How would you evaluate and choose between them?",
+        "What failure modes around {skill} are easiest to miss in {role}, and how would you proactively test them?",
     ]
     template = templates[index % len(templates)]
-    return template.format(n=question_number, skill=skill, role=role_title)
+    return template.format(skill=skill, role=role_title)
 
 
 def _build_topic_resilient_followup_question(session: dict, question_number: int, variant: int = 0) -> str:
@@ -268,14 +489,14 @@ def _build_topic_resilient_followup_question(session: dict, question_number: int
     index = max(0, question_number - 1) + max(0, variant)
 
     templates = [
-        "Question {n}: Explain {topic} with a practical example from a production-like scenario.",
-        "Question {n}: What are the most common failure patterns in {topic}, and how would you detect them early?",
-        "Question {n}: Design a step-by-step implementation plan for {topic} with measurable checkpoints.",
-        "Question {n}: Compare two approaches in {topic}, including trade-offs in scalability, latency, and maintainability.",
-        "Question {n}: If a {topic} solution regressed after deployment, how would you triage and recover safely?",
+        "Explain {topic} with a practical example from a production-like scenario.",
+        "What are the most common failure patterns in {topic}, and how would you detect them early?",
+        "Design a step-by-step implementation plan for {topic} with measurable checkpoints.",
+        "Compare two approaches in {topic}, including trade-offs in scalability, latency, and maintainability.",
+        "If a {topic} solution regressed after deployment, how would you triage and recover safely?",
     ]
     template = templates[index % len(templates)]
-    return template.format(n=question_number, topic=topic_name)
+    return template.format(topic=topic_name)
 
 
 async def _enqueue_resume_followup_with_fallback(
@@ -287,8 +508,10 @@ async def _enqueue_resume_followup_with_fallback(
     suggested_text: str,
     suggested_difficulty: str,
     suggested_category: str,
+    focus_skill_override: str | None = None,
 ) -> tuple[str | None, bool]:
     candidates: list[tuple[str, str, str, bool]] = []
+    existing_questions = await _get_session_question_texts(redis, session_id)
 
     primary = (suggested_text or "").strip()
     if primary:
@@ -302,12 +525,17 @@ async def _enqueue_resume_followup_with_fallback(
             session=session,
             question_number=question_number,
             variant=variant,
+            focus_skill=focus_skill_override,
         )
         candidates.append((fallback_text, "medium", "resume-fallback", False))
 
     seen: set[str] = set()
     for text, difficulty, category, is_primary in candidates:
-        key = _question_fingerprint(text)
+        normalized_text = normalize_question_text(text)
+        if _is_question_too_similar(normalized_text, existing_questions):
+            continue
+
+        key = _question_fingerprint(normalized_text)
         if not key or key in seen:
             continue
         seen.add(key)
@@ -315,13 +543,14 @@ async def _enqueue_resume_followup_with_fallback(
         qid = await enqueue_question(
             redis=redis,
             session_id=session_id,
-            question=text,
+            question=normalized_text,
             difficulty=difficulty,
             category=category,
             ttl_seconds=SESSION_TTL,
             max_queue_size=MAX_QUEUE_SIZE,
         )
         if qid:
+            existing_questions.append(normalized_text)
             return qid, is_primary
 
     return None, False
@@ -335,6 +564,22 @@ async def _get_session_question_texts(redis, session_id: str) -> list[str]:
         text = (q.get("question") or "").strip()
         if text:
             output.append(text)
+    return output
+
+
+async def _get_answered_question_texts(redis, session_id: str, limit: int = 4) -> list[str]:
+    answer_ids = await redis.lrange(f"session:{session_id}:answers", -max(1, limit), -1)
+    output: list[str] = []
+
+    for qid in answer_ids:
+        answer_data = await redis.hgetall(f"session:{session_id}:a:{qid}")
+        text = (answer_data.get("question") or "").strip()
+        if not text:
+            q = await redis.hgetall(f"session:{session_id}:q:{qid}")
+            text = (q.get("question") or "").strip()
+        if text:
+            output.append(text)
+
     return output
 
 
@@ -706,13 +951,16 @@ async def _generate_question_batch(
 async def _append_batch_to_redis(redis, session_id: str, batch: list[dict]) -> list[str]:
     created_ids: list[str] = []
     for item in batch:
+        normalized_question = normalize_question_text(item.get("question", "Can you explain your approach?"))
+        if not normalized_question:
+            continue
         qid = generate_id()
         created_ids.append(qid)
         await redis.hset(
             f"session:{session_id}:q:{qid}",
             mapping={
                 "question_id": qid,
-                "question": item.get("question", "Can you explain your approach?"),
+                "question": normalized_question,
                 "difficulty": item.get("difficulty", "medium"),
                 "category": item.get("category", "general"),
             },
@@ -1054,7 +1302,7 @@ async def _start_topic_interview(user_id: str, topic_id: str) -> dict:
         f"session:{session_id}:q:{first_id}",
         mapping={
             "question_id": first_id,
-            "question": first_question.get("question", "Can you explain this topic?"),
+            "question": normalize_question_text(first_question.get("question", "Can you explain this topic?")),
             "difficulty": first_question.get("difficulty", "medium"),
             "category": first_question.get("category", topic.get("name", "topic")),
         },
@@ -1166,7 +1414,7 @@ async def _start_topic_interview(user_id: str, topic_id: str) -> dict:
         },
         "question": {
             "question_id": first_id,
-            "question": first_question.get("question", "Can you explain this topic?"),
+            "question": normalize_question_text(first_question.get("question", "Can you explain this topic?")),
             "difficulty": first_question.get("difficulty", "medium"),
             "question_number": 1,
             "total_questions": TOPIC_TOTAL_QUESTIONS,
@@ -1316,6 +1564,7 @@ async def start_interview(
     skills_for_interview = build_interview_focus_skills(base_skills_for_interview) or list(jd_required_skills)
 
     intro_question = _build_resume_intro_question(role_title=role_title, jd_title=selected_jd.get("title", ""))
+    intro_question = normalize_question_text(intro_question)
 
     session_id = generate_id()
     _LOCAL_SUMMARIES[session_id] = ""
@@ -1497,6 +1746,17 @@ async def _post_submit_resume_processing(
         if not session:
             return
 
+        skill_pool = _resume_skill_pool(session)
+        recent_answered_questions = await _get_answered_question_texts(
+            redis=redis,
+            session_id=session_id,
+            limit=4,
+        )
+        recent_focus_topic, same_topic_streak = _recent_focus_streak(
+            recent_answered_questions,
+            skill_pool,
+        )
+
         recent_context = await get_recent_context_items(
             redis=redis,
             session_id=session_id,
@@ -1510,6 +1770,8 @@ async def _post_submit_resume_processing(
             current_question=question_text,
             current_answer=answer,
             excluded_questions=excluded_questions,
+            focus_topic=recent_focus_topic or "",
+            same_topic_streak=same_topic_streak,
         )
 
         await redis.hset(
@@ -1529,7 +1791,16 @@ async def _post_submit_resume_processing(
         }
         generated_count = _safe_int(session.get("generated_count", 0))
 
-        follow_text = (evaluation.get("followup_question") or "").strip()
+        follow_text, focus_skill_override = _apply_resume_followup_policy(
+            skill_pool=skill_pool,
+            recent_focus_topic=recent_focus_topic,
+            same_topic_streak=same_topic_streak,
+            suggested_question=(evaluation.get("followup_question") or "").strip(),
+            suggested_topic=(evaluation.get("followup_topic") or "").strip(),
+            followup_need_score=_safe_score_0_100(evaluation.get("followup_need_score", 0)),
+            answered_count=answered_count,
+        )
+
         if answered_count < max_questions and session.get("status") == "in_progress":
             qid, used_model_followup = await _enqueue_resume_followup_with_fallback(
                 redis=redis,
@@ -1539,6 +1810,7 @@ async def _post_submit_resume_processing(
                 suggested_text=follow_text,
                 suggested_difficulty=evaluation.get("difficulty", "medium"),
                 suggested_category=evaluation.get("category", "follow-up"),
+                focus_skill_override=focus_skill_override,
             )
             if qid:
                 generated_count += 1
@@ -1775,12 +2047,33 @@ async def submit_answer(session_id: str, question_id: str, answer: str) -> dict:
         mapping={
             "question_id": question_id,
             "answer": answer,
+            "question": current_question_text,
+            "difficulty": current_q.get("difficulty", "medium"),
+            "category": current_q.get("category", "general"),
             "submitted_at": utc_now(),
         },
     )
     await redis.rpush(f"session:{session_id}:answers", question_id)
     await redis.expire(f"session:{session_id}:a:{question_id}", SESSION_TTL)
     await redis.expire(f"session:{session_id}:answers", SESSION_TTL)
+
+    await db[ANSWERS].update_one(
+        {
+            "session_id": session_id,
+            "question_id": question_id,
+            "user_id": session.get("user_id"),
+        },
+        {
+            "$set": {
+                "question": current_question_text,
+                "answer": answer,
+                "difficulty": current_q.get("difficulty", "medium"),
+                "category": current_q.get("category", "general"),
+                "stored_at": utc_now(),
+            }
+        },
+        upsert=True,
+    )
 
     question_count = _safe_int(session.get("question_count", 1))
     answered_count = _safe_int(session.get("answered_count", 0)) + 1
@@ -1853,6 +2146,17 @@ async def submit_answer(session_id: str, question_id: str, answer: str) -> dict:
 
     # Emergency fallback for rare queue-empty cases.
     if not next_question_id and interview_type == "resume":
+        skill_pool = _resume_skill_pool(session)
+        recent_answered_questions = await _get_answered_question_texts(
+            redis=redis,
+            session_id=session_id,
+            limit=4,
+        )
+        recent_focus_topic, same_topic_streak = _recent_focus_streak(
+            recent_answered_questions,
+            skill_pool,
+        )
+
         recent_context = await get_recent_context_items(
             redis=redis,
             session_id=session_id,
@@ -1866,6 +2170,8 @@ async def submit_answer(session_id: str, question_id: str, answer: str) -> dict:
             current_question=current_question_text,
             current_answer=answer,
             excluded_questions=excluded_questions,
+            focus_topic=recent_focus_topic or "",
+            same_topic_streak=same_topic_streak,
         )
 
         await redis.hset(
@@ -1883,7 +2189,16 @@ async def submit_answer(session_id: str, question_id: str, answer: str) -> dict:
             "bank_shortfall": 0,
             "generation_batches": 1,
         }
-        follow_text = (fallback_evaluation.get("followup_question") or "").strip()
+        follow_text, focus_skill_override = _apply_resume_followup_policy(
+            skill_pool=skill_pool,
+            recent_focus_topic=recent_focus_topic,
+            same_topic_streak=same_topic_streak,
+            suggested_question=(fallback_evaluation.get("followup_question") or "").strip(),
+            suggested_topic=(fallback_evaluation.get("followup_topic") or "").strip(),
+            followup_need_score=_safe_score_0_100(fallback_evaluation.get("followup_need_score", 0)),
+            answered_count=answered_count,
+        )
+
         if answered_count < max_questions:
             qid, used_model_followup = await _enqueue_resume_followup_with_fallback(
                 redis=redis,
@@ -1893,6 +2208,7 @@ async def submit_answer(session_id: str, question_id: str, answer: str) -> dict:
                 suggested_text=follow_text,
                 suggested_difficulty=fallback_evaluation.get("difficulty", "medium"),
                 suggested_category=fallback_evaluation.get("category", "follow-up"),
+                focus_skill_override=focus_skill_override,
             )
             if qid:
                 generated_count += 1
@@ -2143,9 +2459,33 @@ async def get_session_qa(session_id: str) -> list:
     """Get all Q&A pairs from Redis for a session."""
     redis = get_redis()
 
-    question_ids = await redis.lrange(f"session:{session_id}:questions", 0, -1)
+    answer_ids = await redis.lrange(f"session:{session_id}:answers", 0, -1)
     qa_pairs = []
 
+    if answer_ids:
+        for qid in answer_ids:
+            q = await redis.hgetall(f"session:{session_id}:q:{qid}")
+            a = await redis.hgetall(f"session:{session_id}:a:{qid}")
+            if not a:
+                continue
+
+            question_text = (a.get("question") or q.get("question") or "").strip()
+            answer_text = (a.get("answer") or "").strip()
+            if not question_text or not answer_text:
+                continue
+
+            qa_pairs.append({
+                "question_id": qid,
+                "question": question_text,
+                "answer": answer_text,
+                "difficulty": a.get("difficulty") or q.get("difficulty", "medium"),
+                "category": a.get("category") or q.get("category", "general"),
+            })
+
+        if qa_pairs:
+            return qa_pairs
+
+    question_ids = await redis.lrange(f"session:{session_id}:questions", 0, -1)
     for qid in question_ids:
         q = await redis.hgetall(f"session:{session_id}:q:{qid}")
         a = await redis.hgetall(f"session:{session_id}:a:{qid}")

@@ -1,5 +1,6 @@
 import json
 import re
+import random
 
 from utils.gemini import call_gemini
 
@@ -40,6 +41,30 @@ def _extract_json_array(text: str) -> str:
         return value[start:end + 1]
 
     return value
+
+
+def _parse_json_object_loose(text: str) -> dict:
+    value = _extract_json_object(text)
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        cleaned = re.sub(r",\s*([}\]])", r"\1", value)
+        parsed = json.loads(cleaned)
+    if not isinstance(parsed, dict):
+        raise ValueError("Parsed payload is not a JSON object")
+    return parsed
+
+
+def _parse_json_array_loose(text: str) -> list:
+    value = _extract_json_array(text)
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        cleaned = re.sub(r",\s*([}\]])", r"\1", value)
+        parsed = json.loads(cleaned)
+    if not isinstance(parsed, list):
+        raise ValueError("Parsed payload is not a JSON array")
+    return parsed
 
 
 def _fallback_score(answer: str) -> int:
@@ -91,6 +116,9 @@ Rules:
 2) Use resume context for relevance.
 3) Do not repeat or paraphrase excluded_questions.
 4) Keep questions concise and practical.
+5) Make the set diverse: use different styles (scenario, debugging, trade-off, implementation, testing).
+6) Do not prefix with numbering like "Question 1:".
+7) Avoid generic repeats like "Explain your hands-on experience" for every question.
 
 Return ONLY valid JSON array with objects:
 - question (string)
@@ -99,16 +127,12 @@ Return ONLY valid JSON array with objects:
 """
 
     try:
-        result = _extract_json_array(
-            await call_gemini(
-                prompt,
-                max_attempts=1,
-                request_timeout_seconds=3.5,
-            )
+        result = await call_gemini(
+            prompt,
+            max_attempts=3,
+            request_timeout_seconds=20,
         )
-        data = json.loads(result)
-        if not isinstance(data, list):
-            raise ValueError("seed output is not a list")
+        data = _parse_json_array_loose(result)
 
         output = []
         for item in data[:count]:
@@ -124,15 +148,19 @@ Return ONLY valid JSON array with objects:
         return [q for q in output if q.get("question")]
     except Exception:
         base_skill = jd_required_skills[0] if jd_required_skills else (resume_skills[0] if resume_skills else "this role")
+        fallback_templates = [
+            "In a project aligned with {role}, where did {skill} materially change your design decisions?",
+            "If your {skill} implementation regressed after deployment for {role}, how would you triage it?",
+            "What trade-offs did you make while using {skill} under real delivery constraints in {role}?",
+            "How did you test and validate a {skill}-based feature before production in {role}?",
+            "Describe one architecture decision around {skill} that improved reliability or scale for {role}.",
+        ]
         fallback = []
         for i in range(count):
+            template = fallback_templates[i % len(fallback_templates)]
             fallback.append(
                 {
-                    "question": (
-                        f"Explain your hands-on experience with {base_skill} in a project relevant to {role_title}."
-                        if i == 0
-                        else f"What trade-offs did you consider when working with {base_skill}?"
-                    ),
+                    "question": template.format(skill=base_skill, role=role_title),
                     "difficulty": "medium",
                     "category": "resume-seed",
                 }
@@ -147,6 +175,8 @@ async def evaluate_and_generate_followup(
     current_question: str,
     current_answer: str,
     excluded_questions: list[str],
+    focus_topic: str = "",
+    same_topic_streak: int = 0,
 ) -> dict:
     payload = {
         "role_title": role_title,
@@ -155,6 +185,8 @@ async def evaluate_and_generate_followup(
         "current_question": current_question,
         "current_answer": current_answer,
         "excluded_questions": excluded_questions[-25:] if excluded_questions else [],
+        "focus_topic": focus_topic,
+        "same_topic_streak": int(same_topic_streak or 0),
     }
 
     prompt = f"""You are a strict technical interviewer.
@@ -171,40 +203,60 @@ Rules:
 2) Use recent_context for continuity.
 3) Do not repeat/paraphrase excluded_questions.
 4) Score should reflect conceptual correctness, not verbosity.
+5) If same_topic_streak is 2 or more, avoid another same-topic follow-up unless truly critical.
+6) Ask in realistic live-interview style (specific scenario, debugging, trade-off, design decision), not generic textbook phrasing.
+7) Do not prefix numbering like "Question 4:".
+8) Avoid repeating the previous follow-up wording pattern.
 
 Return ONLY valid JSON object:
 {{
   "score": 0-100,
   "feedback": "short technical feedback",
   "followup_question": "...",
+    "followup_topic": "specific required skill/topic for the follow-up",
+    "followup_need_score": 0-100,
   "difficulty": "easy|medium|hard",
   "category": "..."
 }}
 """
 
     try:
-        result = _extract_json_object(
-            await call_gemini(
-                prompt,
-                max_attempts=1,
-                request_timeout_seconds=2.8,
-            )
+        result = await call_gemini(
+            prompt,
+            max_attempts=3,
+            request_timeout_seconds=18,
         )
-        data = json.loads(result)
+        data = _parse_json_object_loose(result)
         followup = (data.get("followup_question") or "").strip()
+        try:
+            followup_need_score = int(data.get("followup_need_score", 70))
+        except Exception:
+            followup_need_score = 70
+        followup_need_score = max(0, min(100, followup_need_score))
         return {
             "score": int(data.get("score", 0)),
             "feedback": (data.get("feedback") or "").strip() or "Answer reviewed.",
             "followup_question": followup,
+            "followup_topic": (data.get("followup_topic") or "").strip(),
+            "followup_need_score": followup_need_score,
             "difficulty": data.get("difficulty") if data.get("difficulty") in {"easy", "medium", "hard"} else "medium",
             "category": data.get("category") or "follow-up",
         }
     except Exception:
         fallback_skill = required_skills[0] if required_skills else "the selected role requirement"
+        fallback_templates = [
+            "In a production system for {role}, describe a failure you would expect around {skill} and how you would debug it end-to-end.",
+            "Given a feature built with {skill}, what trade-offs would you make between speed, reliability, and maintainability in {role}?",
+            "How would you test and validate a {skill}-based implementation before release for {role}?",
+            "Walk through one real incident where {skill} decisions changed the final architecture for {role}.",
+        ]
+        template = random.choice(fallback_templates)
         return {
             "score": _fallback_score(current_answer),
             "feedback": "Try to explain the mechanism, trade-offs, and one concrete example.",
-            "followup_question": f"Can you walk me through a real scenario where you applied {fallback_skill} and what trade-offs you handled?",
+            "followup_question": template.format(skill=fallback_skill, role=role_title),
+            "followup_topic": fallback_skill,
+            "followup_need_score": 70,
             "difficulty": "medium",
             "category": "follow-up",
         }
@@ -242,16 +294,12 @@ Return ONLY valid JSON array with objects:
 """
 
     try:
-        result = _extract_json_array(
-            await call_gemini(
-                prompt,
-                max_attempts=1,
-                request_timeout_seconds=3.5,
-            )
+        result = await call_gemini(
+            prompt,
+            max_attempts=3,
+            request_timeout_seconds=20,
         )
-        data = json.loads(result)
-        if not isinstance(data, list):
-            raise ValueError("topic output is not a list")
+        data = _parse_json_array_loose(result)
 
         out = []
         for item in data[:count]:
