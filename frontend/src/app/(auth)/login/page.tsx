@@ -35,8 +35,12 @@ export default function LoginPage() {
         router.push("/dashboard");
       }
     } catch (err: any) {
+      const detail = err?.response?.data?.detail;
+      const isNetworkError = !err?.response;
       toast.error("Authentication Failed", {
-        description: err.response?.data?.detail || "Please check your credentials and try again.",
+        description: isNetworkError
+          ? "Cannot reach backend API. Start backend server or verify NEXT_PUBLIC_API_URL."
+          : detail || "Please check your credentials and try again.",
       });
     } finally {
       setLoading(false);

@@ -95,6 +95,20 @@ function StartInterviewModal({
 }: StartInterviewModalProps) {
   if (!open) return null;
 
+  const recommendedRoleOptions = (profile?.resume?.parsed_data?.recommended_roles || [])
+    .map((role) => (role || "").trim())
+    .filter((role) => role.length > 0);
+
+  const recommendedRoleKeys = new Set(
+    recommendedRoleOptions.map((role) => role.toLowerCase())
+  );
+  const selectedRoleValue = selectedRoleInput.trim();
+  const selectedRoleIsRecommended = recommendedRoleKeys.has(selectedRoleValue.toLowerCase());
+  const roleSelectValue = selectedRoleValue
+    ? (selectedRoleIsRecommended ? selectedRoleValue : "__custom__")
+    : "";
+  const showCustomRoleInput = recommendedRoleOptions.length === 0 || roleSelectValue === "__custom__";
+
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-foreground/40 backdrop-blur-sm" onClick={onClose} />
@@ -137,22 +151,48 @@ function StartInterviewModal({
             <div className="space-y-3">
               <div className="rounded-xl border border-border bg-background/60 p-3.5">
                 <p className="text-xs font-bold text-muted uppercase tracking-wide mb-2">Step 1 — Interview Role</p>
-                <input
-                  type="text"
-                  list="roles-suggestions"
-                  value={selectedRoleInput}
-                  onChange={(e) => setSelectedRoleInput(e.target.value)}
-                  placeholder="e.g. Frontend Developer"
-                  className="w-full px-3.5 py-2.5 rounded-lg bg-background border border-border focus:outline-none focus:border-primary transition-colors text-sm"
-                />
-                <datalist id="roles-suggestions">
-                  {profile?.resume?.parsed_data?.recommended_roles?.map((role, i) => (
-                    <option key={`rec-${i}`} value={role}>Recommended by AI</option>
-                  ))}
-                  {roles.map((r) => (
-                    <option key={`admin-${r.id}`} value={r.title}>Standard Role</option>
-                  ))}
-                </datalist>
+                <select
+                  value={roleSelectValue}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    if (value === "__custom__") {
+                      setSelectedRoleInput("");
+                      return;
+                    }
+                    setSelectedRoleInput(value);
+                  }}
+                  className="w-full"
+                >
+                  <option value="">Select interview role</option>
+
+                  {recommendedRoleOptions.length > 0 && (
+                    <optgroup label="AI Recommended Roles">
+                      {recommendedRoleOptions.map((role, index) => (
+                        <option key={`rec-${index}`} value={role}>
+                          {role}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+
+                  <option value="__custom__">Type custom role...</option>
+                </select>
+
+                {showCustomRoleInput && (
+                  <input
+                    type="text"
+                    value={selectedRoleInput}
+                    onChange={(e) => setSelectedRoleInput(e.target.value)}
+                    placeholder="Type custom role"
+                    className="mt-2 w-full px-3.5 py-2.5 rounded-lg bg-background border border-border focus:outline-none focus:border-primary transition-colors text-sm"
+                  />
+                )}
+
+                {recommendedRoleOptions.length === 0 && (
+                  <p className="text-xs text-muted mt-2">
+                    No AI recommended roles yet. Re-upload resume in Settings after edits.
+                  </p>
+                )}
               </div>
               <div className="rounded-xl border border-border bg-background/60 p-3.5">
                 <p className="text-xs font-bold text-muted uppercase tracking-wide mb-2">Step 2 — Job Description</p>
@@ -386,7 +426,7 @@ export default function DashboardPage() {
       if (jdItems.length > 0) setSelectedJdId(jdItems[0].id);
       const recRoles = profileRes.data?.resume?.parsed_data?.recommended_roles;
       if (recRoles && recRoles.length > 0) setSelectedRoleInput(recRoles[0]);
-      else if (availableRoles.length > 0) setSelectedRoleInput(availableRoles[0].title);
+      else setSelectedRoleInput("");
     } catch (err) {
       console.error("Failed to fetch dashboard data", err);
     } finally {
