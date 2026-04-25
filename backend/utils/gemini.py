@@ -306,6 +306,50 @@ Return ONLY valid JSON, no markdown formatting."""
         }
 
 
+async def parse_jd_with_gemini(jd_text: str) -> dict:
+    """Extract structured job description data (title, description, required_skills) from raw text."""
+    prompt = f"""You are a job description parser. Extract structured information from the given job description text.
+
+Return ONLY valid JSON with exactly these fields:
+{{
+  "title": "job title (string)",
+  "company": "company name if present, else null",
+  "description": "cleaned full job description text (string)",
+  "required_skills": ["skill1", "skill2", ...]
+}}
+
+Rules:
+1. "title" — infer the most appropriate job title from the content (e.g. "Software Engineer", "Data Analyst").
+2. "company" — extract if explicitly mentioned, otherwise null.
+3. "description" — cleaned, coherent description text; keep it as a single string.
+4. "required_skills" — extract only specific, concrete technical skills, tools, languages, or certifications; no vague traits like "teamwork".
+
+Job Description Text:
+---
+{jd_text}
+---
+
+Return ONLY valid JSON, no markdown."""
+
+    try:
+        raw = await call_gemini(prompt)
+        cleaned = _extract_json_object(raw)
+        parsed = json.loads(cleaned)
+        return {
+            "title": (parsed.get("title") or "").strip() or "Untitled",
+            "company": (parsed.get("company") or "").strip() or None,
+            "description": (parsed.get("description") or "").strip() or jd_text[:2000],
+            "required_skills": normalize_skill_list(parsed.get("required_skills") or []),
+        }
+    except Exception:
+        return {
+            "title": "Untitled",
+            "company": None,
+            "description": jd_text[:2000],
+            "required_skills": [],
+        }
+
+
 async def analyze_resume_vs_job_description(
     role_title: str,
     resume_skills: list,

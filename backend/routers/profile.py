@@ -10,7 +10,18 @@ from services.job_description_service import (
     list_my_job_descriptions,
     update_my_job_description,
     delete_my_job_description,
+    parse_jd_from_file,
 )
+from services.group_test_service import (
+    list_group_tests,
+    get_group_test,
+    start_group_test_attempt,
+    get_group_test_result,
+    link_topic_session,
+    get_my_group_test_results,
+    get_my_group_test_attempt,
+)
+from fastapi import UploadFile, File
 
 router = APIRouter()
 
@@ -33,6 +44,7 @@ async def get_profile(current_user: dict = Depends(get_current_user)):
         "speech_settings": {
             "voice_gender": (user or {}).get("speech_settings", {}).get("voice_gender", "female"),
         },
+        "reg_no": (user or {}).get("reg_no") or None,
     }
 
     # Get resume info
@@ -169,3 +181,102 @@ async def delete_my_job_description_endpoint(
     if not success:
         raise HTTPException(status_code=404, detail="Job description not found")
     return {"message": "Job description deleted"}
+
+
+@router.post("/job-descriptions/parse-file")
+async def parse_jd_file_for_user(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """Upload a JD file (PDF/DOCX/TXT) and extract structured fields via AI."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+
+    allowed_ext = {".pdf", ".doc", ".docx", ".txt"}
+    ext = "." + file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
+    if ext not in allowed_ext:
+        raise HTTPException(status_code=400, detail="Unsupported file type. Allowed: PDF, DOC, DOCX, TXT")
+
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large. Maximum 10MB")
+
+    try:
+        result = await parse_jd_from_file(file.filename, content)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse JD file: {str(e)}")
+
+
+# ─── Group Tests (student) ───────────────────────────────────────────────────
+
+@router.get("/group-tests")
+async def list_available_group_tests(
+    current_user: dict = Depends(get_current_user),
+):
+    """List published group tests available to students."""
+    items = await list_group_tests(only_published=True)
+    return {"items": items}
+
+
+@router.get("/group-tests/my-results")
+async def my_group_test_results(
+    current_user: dict = Depends(get_current_user),
+):
+    """List all group test results for the current student."""
+    items = await get_my_group_test_results(current_user["user_id"])
+    return {"items": items}
+
+
+@router.post("/group-tests/{group_test_id}/start")
+async def start_group_test(
+    group_test_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Start a new attempt for a group test."""
+    try:
+        result = await start_group_test_attempt(group_test_id, current_user["user_id"])
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/group-tests/{group_test_id}/my-attempt")
+async def get_my_attempt(
+    group_test_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Get student's latest attempt at a group test."""
+    result = await get_my_group_test_attempt(group_test_id, current_user["user_id"])
+    return result  # may be None
+
+
+@router.get("/group-tests/results/{result_id}")
+async def get_result_detail(
+    result_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Get full detail of a group test result."""
+    try:
+        return await get_group_test_result(result_id, current_user["user_id"])
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/group-tests/results/{result_id}/link-topic")
+async def link_topic_to_result(
+    result_id: str,
+    request_data: dict,
+    current_user: dict = Depends(get_current_user),
+):
+    """Link a completed interview session to a topic inside a group test result."""
+    topic_id = (request_data.get("topic_id") or "").strip()
+    session_id = (request_data.get("session_id") or "").strip()
+    if not topic_id or not session_id:
+        raise HTTPException(status_code=400, detail="topic_id and session_id are required")
+    try:
+        return await link_topic_session(result_id, current_user["user_id"], topic_id, session_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
