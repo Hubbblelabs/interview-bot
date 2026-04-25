@@ -17,6 +17,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Bot,
+  Layers,
+  MessageSquareDot,
 } from "lucide-react";
 import { getUser, logout } from "@/lib/auth";
 import { User } from "@/types";
@@ -101,6 +103,8 @@ export default function Navbar() {
               <NavLink href="/admin/topics" icon={Tags} label="Topics" />
               <NavLink href="/admin/questions" icon={FileSignature} label="Questions" />
               <NavLink href="/admin/job-descriptions" icon={Briefcase} label="Job Descriptions" />
+              <NavLink href="/admin/group-tests" icon={Layers} label="Group Tests" />
+              <NavLink href="/admin/chatbot" icon={MessageSquareDot} label="AI Filter" />
               <NavLink href="/admin/interviews" icon={Send} label="Make Interview" />
               <NavLink href="/admin/reports" icon={FileText} label="Reports" />
               <NavLink href="/admin/users" icon={Users} label="Users" />
@@ -162,6 +166,7 @@ export default function Navbar() {
           <div className="flex items-center gap-1">
             <NavLink href="/dashboard" icon={UserIcon} label="Overview" />
             <NavLink href="/bots-help" icon={Bot} label="Bot's Help" />
+            <NavLink href="/group-test" icon={Layers} label="Group Tests" />
             <NavLink href="/reports" icon={BarChart3} label="Reports" />
             <NavLink href="/settings" icon={Settings} label="Settings" />
           </div>

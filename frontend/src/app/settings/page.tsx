@@ -1,14 +1,17 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Navbar from "@/components/Navbar";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import api from "@/lib/api";
 import { Profile, JobDescription } from "@/types";
 import { SpeechVoiceGender } from "@/lib/speech";
-import { Settings, Upload, User, Zap, CheckCircle, Loader2 } from "lucide-react";
+import { Settings, Upload, User, Zap, CheckCircle, Loader2, FileUp } from "lucide-react";
 import { PageSkeleton } from "@/components/Skeleton";
 import { toast } from "sonner";
+
+// Resume filename must be: {12 digits}_{name}.{ext}
+const RESUME_FILENAME_RE = /^(\d{12})_(.+)\.(pdf|doc|docx|txt)$/i;
 
 export default function SettingsPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -43,6 +46,11 @@ export default function SettingsPage() {
     description: "",
     requiredSkillsText: "",
   });
+
+  // JD input mode: "type" (manual) or "upload" (file)
+  const [jdInputMode, setJdInputMode] = useState<"type" | "upload">("type");
+  const [jdFileUploading, setJdFileUploading] = useState(false);
+  const jdFileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetchProfile();
@@ -113,12 +121,48 @@ export default function SettingsPage() {
 
   const resetJdForm = () => {
     setEditingJdId(null);
+    setJdInputMode("type");
     setJdForm({
       title: "",
       company: "",
       description: "",
       requiredSkillsText: "",
     });
+    if (jdFileInputRef.current) jdFileInputRef.current.value = "";
+  };
+
+  const handleJdFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const allowedExts = [".pdf", ".doc", ".docx", ".txt"];
+    const ext = "." + file.name.split(".").pop()!.toLowerCase();
+    if (!allowedExts.includes(ext)) {
+      toast.error("Unsupported file type. Please upload PDF, DOC, DOCX, or TXT.");
+      return;
+    }
+
+    setJdFileUploading(true);
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const { data } = await api.post("/profile/job-descriptions/parse-file", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      setJdForm({
+        title: data.title || "",
+        company: data.company || "",
+        description: data.description || "",
+        requiredSkillsText: (data.required_skills || []).join(", "),
+      });
+      setJdInputMode("type"); // switch to type mode so user can review/edit the pre-filled form
+      toast.success("JD extracted — review and save below.");
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || "Failed to parse JD file");
+    } finally {
+      setJdFileUploading(false);
+      if (jdFileInputRef.current) jdFileInputRef.current.value = "";
+    }
   };
 
   const onEditJd = (item: JobDescription) => {
@@ -187,6 +231,15 @@ export default function SettingsPage() {
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    // Client-side filename validation
+    if (!RESUME_FILENAME_RE.test(file.name)) {
+      toast.error(
+        "Invalid filename. Format: 714023243122_YourName.pdf  (12-digit register number + underscore + your name)"
+      );
+      e.target.value = "";
+      return;
+    }
 
     setUploading(true);
     setUploadSuccess(false);
@@ -300,32 +353,86 @@ export default function SettingsPage() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
-              <input
-                type="text"
-                placeholder="JD title"
-                value={jdForm.title}
-                onChange={(e) => setJdForm((prev) => ({ ...prev, title: e.target.value }))}
-              />
-              <input
-                type="text"
-                placeholder="Company (optional)"
-                value={jdForm.company}
-                onChange={(e) => setJdForm((prev) => ({ ...prev, company: e.target.value }))}
-              />
+              {/* JD Input Mode Toggle */}
+              <div className="md:col-span-2 flex gap-2 mb-1">
+                <button
+                  type="button"
+                  onClick={() => setJdInputMode("type")}
+                  className={`flex-1 py-2 rounded-lg text-sm font-semibold border transition-all ${jdInputMode === "type" ? "bg-primary text-white border-primary" : "bg-transparent text-muted border-border hover:border-primary/40"}`}
+                >
+                  ✏️ Type manually
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setJdInputMode("upload")}
+                  className={`flex-1 py-2 rounded-lg text-sm font-semibold border transition-all ${jdInputMode === "upload" ? "bg-primary text-white border-primary" : "bg-transparent text-muted border-border hover:border-primary/40"}`}
+                >
+                  📄 Upload file (AI extract)
+                </button>
+              </div>
+
+              {jdInputMode === "upload" ? (
+                <div className="md:col-span-2">
+                  <label className="block cursor-pointer">
+                    <div className="p-6 rounded-lg border-2 border-dashed border-border hover:border-primary/50 transition-colors text-center">
+                      {jdFileUploading ? (
+                        <div className="flex items-center justify-center gap-2">
+                          <Loader2 className="w-5 h-5 animate-spin text-muted" />
+                          <span className="text-sm text-muted">Extracting JD with AI…</span>
+                        </div>
+                      ) : (
+                        <>
+                          <FileUp className="w-6 h-6 text-muted mx-auto mb-2" />
+                          <p className="text-sm text-muted">Upload JD file — AI will extract title, description and skills</p>
+                          <p className="text-xs text-muted mt-1">PDF, DOC, DOCX, TXT (max 10MB)</p>
+                        </>
+                      )}
+                    </div>
+                    <input
+                      ref={jdFileInputRef}
+                      type="file"
+                      accept=".pdf,.doc,.docx,.txt"
+                      onChange={handleJdFileUpload}
+                      className="hidden"
+                      disabled={jdFileUploading}
+                    />
+                  </label>
+                </div>
+              ) : (
+                <>
+                  <input
+                    type="text"
+                    placeholder="JD title"
+                    value={jdForm.title}
+                    onChange={(e) => setJdForm((prev) => ({ ...prev, title: e.target.value }))}
+                  />
+                  <input
+                    type="text"
+                    placeholder="Company (optional)"
+                    value={jdForm.company}
+                    onChange={(e) => setJdForm((prev) => ({ ...prev, company: e.target.value }))}
+                  />
+                </>
+              )}
             </div>
-            <textarea
-              rows={5}
-              placeholder="Paste job description text"
-              value={jdForm.description}
-              onChange={(e) => setJdForm((prev) => ({ ...prev, description: e.target.value }))}
-              className="mb-3"
-            />
-            <input
-              type="text"
-              placeholder="Required skills (comma separated)"
-              value={jdForm.requiredSkillsText}
-              onChange={(e) => setJdForm((prev) => ({ ...prev, requiredSkillsText: e.target.value }))}
-            />
+
+            {jdInputMode === "type" && (
+              <>
+                <textarea
+                  rows={5}
+                  placeholder="Paste job description text"
+                  value={jdForm.description}
+                  onChange={(e) => setJdForm((prev) => ({ ...prev, description: e.target.value }))}
+                  className="mb-3"
+                />
+                <input
+                  type="text"
+                  placeholder="Required skills (comma separated)"
+                  value={jdForm.requiredSkillsText}
+                  onChange={(e) => setJdForm((prev) => ({ ...prev, requiredSkillsText: e.target.value }))}
+                />
+              </>
+            )}
 
             <div className="mt-3 flex items-center gap-2">
               <button
@@ -449,9 +556,13 @@ export default function SettingsPage() {
                 <span className="text-sm text-muted">Email</span>
                 <span className="text-sm font-medium">{profile?.email}</span>
               </div>
-              <div className="flex items-center justify-between py-2">
+              <div className="flex items-center justify-between py-2 border-b border-border">
                 <span className="text-sm text-muted">Role</span>
                 <span className="text-sm font-medium capitalize">{profile?.role}</span>
+              </div>
+              <div className="flex items-center justify-between py-2">
+                <span className="text-sm text-muted">Register No</span>
+                <span className="text-sm font-medium font-mono">{profile?.reg_no || <span className="text-muted italic">Not set — upload resume first</span>}</span>
               </div>
             </div>
           </div>
@@ -469,8 +580,18 @@ export default function SettingsPage() {
                   <span className="text-sm font-medium text-green-400">Resume uploaded</span>
                 </div>
                 <p className="text-xs text-muted ml-6">{profile.resume.filename}</p>
+                {profile.reg_no && (
+                  <p className="text-xs text-primary font-semibold ml-6 mt-1">Register No: {profile.reg_no}</p>
+                )}
               </div>
             ) : null}
+
+            <div className="mb-4 p-3 rounded-lg bg-amber-500/8 border border-amber-500/20 text-xs text-amber-400 leading-relaxed">
+              <p className="font-semibold mb-1">⚠️ Required filename format:</p>
+              <p className="font-mono text-amber-300">{"<12-digit-reg-no>_<YourName>.pdf"}</p>
+              <p className="mt-1 text-amber-400/80">Example: <span className="font-mono">714023243122_Sajith J.pdf</span></p>
+              <p className="mt-1 text-amber-400/80">Allowed: PDF, DOC, DOCX, TXT</p>
+            </div>
 
             <label className="block">
               <div className="flex items-center gap-4">

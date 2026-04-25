@@ -51,6 +51,8 @@ interface StartInterviewModalProps {
   jobDescriptions: JobDescription[];
   selectedRoleInput: string;
   setSelectedRoleInput: (v: string) => void;
+  isCustomRoleMode: boolean;
+  setIsCustomRoleMode: (v: boolean) => void;
   interviewMode: "resume" | "topic";
   setInterviewMode: (v: "resume" | "topic") => void;
   selectedTopicId: string;
@@ -67,12 +69,10 @@ interface StartInterviewModalProps {
 
 function StartInterviewModal({
   open, onClose, profile, roles, topics, jobDescriptions,
-  selectedRoleInput, setSelectedRoleInput, interviewMode, setInterviewMode,
+  selectedRoleInput, setSelectedRoleInput, isCustomRoleMode, setIsCustomRoleMode, interviewMode, setInterviewMode,
   selectedTopicId, setSelectedTopicId, selectedJdId, setSelectedJdId,
   verificationResult, isAutoVerifyingMatch, isStartingInterview, startInterviewStatus, startInterview,
 }: StartInterviewModalProps) {
-  if (!open) return null;
-
   const recommendedRoleOptions = (profile?.resume?.parsed_data?.recommended_roles || [])
     .map((role) => (role || "").trim())
     .filter((role) => role.length > 0);
@@ -80,12 +80,15 @@ function StartInterviewModal({
   const recommendedRoleKeys = new Set(
     recommendedRoleOptions.map((role) => role.toLowerCase())
   );
+
   const selectedRoleValue = selectedRoleInput.trim();
   const selectedRoleIsRecommended = recommendedRoleKeys.has(selectedRoleValue.toLowerCase());
-  const roleSelectValue = selectedRoleValue
-    ? (selectedRoleIsRecommended ? selectedRoleValue : "__custom__")
-    : "";
-  const showCustomRoleInput = recommendedRoleOptions.length === 0 || roleSelectValue === "__custom__";
+  const roleSelectValue = isCustomRoleMode
+    ? "__custom__"
+    : (selectedRoleIsRecommended ? selectedRoleValue : "");
+  const showCustomRoleInput = recommendedRoleOptions.length === 0 || isCustomRoleMode;
+
+  if (!open) return null;
 
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
@@ -123,12 +126,14 @@ function StartInterviewModal({
                   onChange={(e) => {
                     const value = e.target.value;
                     if (value === "__custom__") {
+                      setIsCustomRoleMode(true);
                       setSelectedRoleInput("");
                       return;
                     }
+                    setIsCustomRoleMode(false);
                     setSelectedRoleInput(value);
                   }}
-                  className="w-full"
+                  className="w-full text-foreground"
                 >
                   <option value="">Select interview role</option>
 
@@ -149,9 +154,12 @@ function StartInterviewModal({
                   <input
                     type="text"
                     value={selectedRoleInput}
-                    onChange={(e) => setSelectedRoleInput(e.target.value)}
+                    onChange={(e) => {
+                      setIsCustomRoleMode(true);
+                      setSelectedRoleInput(e.target.value);
+                    }}
                     placeholder="Type custom role"
-                    className="mt-2 w-full px-3.5 py-2.5 rounded-lg bg-background border border-border focus:outline-none focus:border-primary transition-colors text-sm"
+                    className="mt-2 w-full px-3.5 py-2.5 rounded-lg bg-background border border-border focus:outline-none focus:border-primary transition-colors text-sm text-foreground"
                   />
                 )}
 
@@ -213,6 +221,7 @@ export default function BotsHelpPage() {
   const [topics, setTopics] = useState<Topic[]>([]);
   const [jobDescriptions, setJobDescriptions] = useState<JobDescription[]>([]);
   const [selectedRoleInput, setSelectedRoleInput] = useState("");
+  const [isCustomRoleMode, setIsCustomRoleMode] = useState(false);
   const [interviewMode, setInterviewMode] = useState<"resume" | "topic">("resume");
   const [selectedTopicId, setSelectedTopicId] = useState("");
   const [selectedJdId, setSelectedJdId] = useState("");
@@ -319,8 +328,13 @@ export default function BotsHelpPage() {
       setJobDescriptions(jdItems);
       if (jdItems.length > 0) setSelectedJdId(jdItems[0].id);
       const recRoles = profileRes.data?.resume?.parsed_data?.recommended_roles;
-      if (recRoles && recRoles.length > 0) setSelectedRoleInput(recRoles[0]);
-      else setSelectedRoleInput("");
+      if (recRoles && recRoles.length > 0) {
+        setSelectedRoleInput(recRoles[0]);
+        setIsCustomRoleMode(false);
+      } else {
+        setSelectedRoleInput("");
+        setIsCustomRoleMode(false);
+      }
     } catch (err) {
       console.error("Failed to fetch Bot's Help data", err);
     } finally {
@@ -507,6 +521,8 @@ export default function BotsHelpPage() {
         jobDescriptions={jobDescriptions}
         selectedRoleInput={selectedRoleInput}
         setSelectedRoleInput={setSelectedRoleInput}
+        isCustomRoleMode={isCustomRoleMode}
+        setIsCustomRoleMode={setIsCustomRoleMode}
         interviewMode={interviewMode}
         setInterviewMode={setInterviewMode}
         selectedTopicId={selectedTopicId}
@@ -720,7 +736,7 @@ export default function BotsHelpPage() {
                         <p className="text-xs font-bold text-muted uppercase tracking-wide mb-2">AI Recommended Roles</p>
                         <div className="flex flex-wrap gap-2">
                           {resumeData.recommended_roles.map((role: string, i: number) => (
-                            <span key={i} className="px-3 py-1.5 rounded-xl bg-accent/20 border border-accent/30 text-secondary text-xs font-bold flex items-center gap-1.5 cursor-pointer hover:bg-primary/10 transition-colors" onClick={() => { setSelectedRoleInput(role); setShowStartModal(true); }}>
+                            <span key={i} className="px-3 py-1.5 rounded-xl bg-accent/20 border border-accent/30 text-secondary text-xs font-bold flex items-center gap-1.5 cursor-pointer hover:bg-primary/10 transition-colors" onClick={() => { setIsCustomRoleMode(false); setSelectedRoleInput(role); setShowStartModal(true); }}>
                               <Play className="w-3 h-3" />
                               {role}
                             </span>

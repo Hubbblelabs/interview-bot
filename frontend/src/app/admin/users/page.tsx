@@ -38,7 +38,8 @@ export default function AdminUsersPage() {
     return items.filter(
       (user) =>
         user.name.toLowerCase().includes(term) ||
-        user.email.toLowerCase().includes(term)
+        user.email.toLowerCase().includes(term) ||
+        (user.reg_no || "").toLowerCase().includes(term)
     );
   }, [items, query]);
 
@@ -103,6 +104,7 @@ export default function AdminUsersPage() {
                     <tr>
                       <th className="text-left px-4 py-3 font-medium">Name</th>
                       <th className="text-left px-4 py-3 font-medium">Email</th>
+                      <th className="text-left px-4 py-3 font-medium">Reg No</th>
                       <th className="text-left px-4 py-3 font-medium">Joined</th>
                       <th className="text-left px-4 py-3 font-medium">Interviews</th>
                       <th className="text-left px-4 py-3 font-medium">Reports</th>
@@ -114,6 +116,7 @@ export default function AdminUsersPage() {
                       <tr key={user.id} className="border-t border-border/70">
                         <td className="px-4 py-3 font-medium">{user.name || "Unknown"}</td>
                         <td className="px-4 py-3 text-muted">{user.email}</td>
+                        <td className="px-4 py-3 font-mono text-xs text-primary">{user.reg_no || <span className="text-muted italic">—</span>}</td>
                         <td className="px-4 py-3 text-muted">{user.created_at ? new Date(user.created_at).toLocaleDateString() : "-"}</td>
                         <td className="px-4 py-3">{user.interview_count}</td>
                         <td className="px-4 py-3">{user.report_count}</td>

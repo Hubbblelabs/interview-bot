@@ -92,3 +92,50 @@ export interface AdminReportDetail extends InterviewReport {
     generation_batches?: number;
   };
 }
+
+// ─── Group Tests ─────────────────────────────────────────────────────────────
+
+export interface GroupTestTopic {
+  id: string;
+  name: string;
+}
+
+export interface GroupTest {
+  id: string;
+  name: string;
+  description?: string | null;
+  topic_ids: string[];
+  topics: GroupTestTopic[];
+  time_limit_minutes?: number | null;
+  max_attempts: number;
+  is_published: boolean;
+  created_by: string;
+  created_at: string;
+}
+
+export interface GroupTestTopicResult {
+  topic_id: string;
+  topic_name: string;
+  session_id?: string | null;
+  status: "pending" | "in_progress" | "completed";
+  overall_score?: number | null;
+  total_questions?: number | null;
+  completed_at?: string | null;
+}
+
+export interface GroupTestResult {
+  id: string;
+  group_test_id: string;
+  group_test_name: string;
+  user_id: string;
+  user_name: string;
+  user_email: string;
+  attempt_number: number;
+  topic_results: GroupTestTopicResult[];
+  overall_score?: number | null;
+  status: "in_progress" | "completed";
+  started_at: string;
+  completed_at?: string | null;
+  time_limit_minutes?: number | null;
+}
+

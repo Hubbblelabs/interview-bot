@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Navbar from "@/components/Navbar";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import api from "@/lib/api";
 import { JobDescription } from "@/types";
-import { Briefcase, Loader2, Plus } from "lucide-react";
+import { Briefcase, FileUp, Loader2, Plus } from "lucide-react";
 import { toast } from "sonner";
 
 export default function AdminJobDescriptionsPage() {
@@ -19,6 +19,9 @@ export default function AdminJobDescriptionsPage() {
     description: "",
     requiredSkillsText: "",
   });
+  const [inputMode, setInputMode] = useState<"type" | "upload">("type");
+  const [fileUploading, setFileUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetchItems();
@@ -37,12 +40,48 @@ export default function AdminJobDescriptionsPage() {
 
   const resetForm = () => {
     setEditingId(null);
+    setInputMode("type");
     setForm({
       title: "",
       company: "",
       description: "",
       requiredSkillsText: "",
     });
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const handleJdFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const allowedExts = [".pdf", ".doc", ".docx", ".txt"];
+    const ext = "." + file.name.split(".").pop()!.toLowerCase();
+    if (!allowedExts.includes(ext)) {
+      toast.error("Unsupported file type. Please upload PDF, DOC, DOCX, or TXT.");
+      return;
+    }
+
+    setFileUploading(true);
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const { data } = await api.post("/admin/job-descriptions/parse-file", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      setForm({
+        title: data.title || "",
+        company: data.company || "",
+        description: data.description || "",
+        requiredSkillsText: (data.required_skills || []).join(", "),
+      });
+      setInputMode("type");
+      toast.success("JD extracted — review and save below.");
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || "Failed to parse JD file");
+    } finally {
+      setFileUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
   };
 
   const saveItem = async () => {
@@ -80,6 +119,7 @@ export default function AdminJobDescriptionsPage() {
 
   const editItem = (item: JobDescription) => {
     setEditingId(item.id);
+    setInputMode("type");
     setForm({
       title: item.title || "",
       company: item.company || "",
@@ -118,48 +158,98 @@ export default function AdminJobDescriptionsPage() {
           </div>
 
           <div className="app-panel mb-5">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
-              <input
-                placeholder="JD title"
-                value={form.title}
-                onChange={(e) => setForm((prev) => ({ ...prev, title: e.target.value }))}
-                className="app-control"
-              />
-              <input
-                placeholder="Company (optional)"
-                value={form.company}
-                onChange={(e) => setForm((prev) => ({ ...prev, company: e.target.value }))}
-                className="app-control"
-              />
-            </div>
-            <textarea
-              rows={5}
-              placeholder="Job description text"
-              value={form.description}
-              onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
-              className="app-control mb-3"
-            />
-            <input
-              placeholder="Required skills (comma separated)"
-              value={form.requiredSkillsText}
-              onChange={(e) => setForm((prev) => ({ ...prev, requiredSkillsText: e.target.value }))}
-              className="app-control"
-            />
-            <div className="mt-3 flex items-center gap-2">
+            {/* Input mode toggle */}
+            <div className="flex gap-2 mb-4">
               <button
-                onClick={saveItem}
-                disabled={saving}
-                className="px-3 py-1.5 rounded-lg bg-white text-black text-sm font-medium hover:bg-gray-200 disabled:opacity-40 inline-flex items-center gap-2"
+                type="button"
+                onClick={() => setInputMode("type")}
+                className={`flex-1 py-2 rounded-lg text-sm font-semibold border transition-all ${inputMode === "type" ? "bg-white text-black border-white" : "bg-transparent text-muted border-border hover:border-white/30"}`}
               >
-                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-                {editingId ? "Update JD" : "Add JD"}
+                ✏️ Type manually
               </button>
-              {editingId && (
-                <button onClick={resetForm} className="app-btn">
-                  Cancel Edit
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => setInputMode("upload")}
+                className={`flex-1 py-2 rounded-lg text-sm font-semibold border transition-all ${inputMode === "upload" ? "bg-white text-black border-white" : "bg-transparent text-muted border-border hover:border-white/30"}`}
+              >
+                📄 Upload file (AI extract)
+              </button>
             </div>
+
+            {inputMode === "upload" ? (
+              <label className="block cursor-pointer mb-4">
+                <div className="p-6 rounded-lg border-2 border-dashed border-border hover:border-white/30 transition-colors text-center">
+                  {fileUploading ? (
+                    <div className="flex items-center justify-center gap-2">
+                      <Loader2 className="w-5 h-5 animate-spin text-muted" />
+                      <span className="text-sm text-muted">Extracting JD with AI…</span>
+                    </div>
+                  ) : (
+                    <>
+                      <FileUp className="w-6 h-6 text-muted mx-auto mb-2" />
+                      <p className="text-sm text-muted">Upload JD file — AI extracts title, description & skills</p>
+                      <p className="text-xs text-muted mt-1">PDF, DOC, DOCX, TXT (max 10MB)</p>
+                    </>
+                  )}
+                </div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".pdf,.doc,.docx,.txt"
+                  onChange={handleJdFileUpload}
+                  className="hidden"
+                  disabled={fileUploading}
+                />
+              </label>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+                  <input
+                    placeholder="JD title"
+                    value={form.title}
+                    onChange={(e) => setForm((prev) => ({ ...prev, title: e.target.value }))}
+                    className="app-control"
+                  />
+                  <input
+                    placeholder="Company (optional)"
+                    value={form.company}
+                    onChange={(e) => setForm((prev) => ({ ...prev, company: e.target.value }))}
+                    className="app-control"
+                  />
+                </div>
+                <textarea
+                  rows={5}
+                  placeholder="Job description text"
+                  value={form.description}
+                  onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
+                  className="app-control mb-3"
+                />
+                <input
+                  placeholder="Required skills (comma separated)"
+                  value={form.requiredSkillsText}
+                  onChange={(e) => setForm((prev) => ({ ...prev, requiredSkillsText: e.target.value }))}
+                  className="app-control"
+                />
+              </>
+            )}
+
+            {inputMode === "type" && (
+              <div className="mt-3 flex items-center gap-2">
+                <button
+                  onClick={saveItem}
+                  disabled={saving}
+                  className="px-3 py-1.5 rounded-lg bg-white text-black text-sm font-medium hover:bg-gray-200 disabled:opacity-40 inline-flex items-center gap-2"
+                >
+                  {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                  {editingId ? "Update JD" : "Add JD"}
+                </button>
+                {editingId && (
+                  <button onClick={resetForm} className="app-btn">
+                    Cancel Edit
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="space-y-3">
@@ -196,3 +286,4 @@ export default function AdminJobDescriptionsPage() {
     </ProtectedRoute>
   );
 }
+

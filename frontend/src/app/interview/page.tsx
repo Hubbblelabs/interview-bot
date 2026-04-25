@@ -56,7 +56,7 @@ const difficultyConfig = (diff: string) => {
 
 // ── Completion Screen ─────────────────────────────────────────────────────────
 
-function CompletionScreen({ onViewReport, generatingReport }: { onViewReport: () => void; generatingReport: boolean }) {
+function CompletionScreen({ onViewReport, generatingReport, returnTo }: { onViewReport: () => void; generatingReport: boolean; returnTo?: string }) {
   return (
     <ProtectedRoute requiredRole="student">
       <div className="min-h-screen bg-gradient-to-br from-background via-[#e8f0fb] to-[#d6eaff] flex items-center justify-center px-4">
@@ -95,6 +95,8 @@ function CompletionScreen({ onViewReport, generatingReport }: { onViewReport: ()
           >
             {generatingReport ? (
               <><Loader2 className="w-5 h-5 animate-spin" />Generating Report…</>
+            ) : returnTo ? (
+              <><ChevronRight className="w-5 h-5" />Save &amp; Continue Group Test</>
             ) : (
               <><ChevronRight className="w-5 h-5" />View My Report</>
             )}
@@ -121,6 +123,7 @@ function InterviewContent() {
   const [timerEnabled] = useState(searchParams.get("timerEnabled") === "1");
   const [timeLeft, setTimeLeft] = useState(parseInt(searchParams.get("timerSeconds") || "0"));
   const [isTimeUp, setIsTimeUp] = useState(false);
+  const [returnTo] = useState(searchParams.get("return_to") || "");
 
   const [answer, setAnswer] = useState("");
   const [speechFinalTranscript, setSpeechFinalTranscript] = useState("");
@@ -360,8 +363,14 @@ function InterviewContent() {
 
   const viewReport = async () => {
     setGeneratingReport(true);
-    try { await api.get(`/interview/report?session_id=${sessionId}`); router.push(`/report/${sessionId}`); }
-    catch (err: any) { toast.error(err.response?.data?.detail || "Failed to generate report"); setGeneratingReport(false); }
+    try {
+      await api.get(`/interview/report?session_id=${sessionId}`);
+      if (returnTo) {
+        router.push(decodeURIComponent(returnTo));
+      } else {
+        router.push(`/report/${sessionId}`);
+      }
+    } catch (err: any) { toast.error(err.response?.data?.detail || "Failed to generate report"); setGeneratingReport(false); }
   };
 
   const quitInterview = async () => {
@@ -408,7 +417,7 @@ function InterviewContent() {
   };
 
   if (isComplete) {
-    return <CompletionScreen onViewReport={viewReport} generatingReport={generatingReport} />;
+    return <CompletionScreen onViewReport={viewReport} generatingReport={generatingReport} returnTo={returnTo} />;
   }
 
   // ── 30/70 Split Layout ────────────────────────────────────────────────────

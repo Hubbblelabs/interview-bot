@@ -3,6 +3,8 @@ from bson import ObjectId
 from database import get_db
 from models.collections import JOB_DESCRIPTIONS
 from utils.helpers import utc_now, str_objectid, str_objectids
+from utils.resume_text import extract_resume_text
+from utils.gemini import parse_jd_with_gemini
 
 
 def _normalize_required_skills(required_skills):
@@ -160,3 +162,11 @@ async def get_job_description_for_user(user_id: str, jd_id: str) -> dict:
     if not doc:
         raise ValueError("Job description not found")
     return str_objectid(doc)
+
+
+async def parse_jd_from_file(filename: str, file_content: bytes) -> dict:
+    """Extract text from an uploaded JD file and use AI to parse it into structured fields."""
+    text = extract_resume_text(filename, file_content)
+    if not text or len(text.strip()) < 20:
+        raise ValueError("Could not extract readable text from the uploaded file")
+    return await parse_jd_with_gemini(text)

@@ -10,12 +10,14 @@ export interface AdminUser {
   name: string;
   email: string;
   role: "student" | "admin";
+  reg_no?: string | null;
   created_at: string;
   interview_count: number;
   report_count: number;
 }
 
 export interface Profile extends User {
+  reg_no?: string | null;
   speech_settings?: {
     voice_gender?: "male" | "female" | "auto";
     voice_id?: string;

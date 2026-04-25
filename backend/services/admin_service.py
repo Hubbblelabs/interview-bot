@@ -600,6 +600,7 @@ async def list_admin_users(limit: int = 500) -> list:
                 "name": normalized.get("name", ""),
                 "email": normalized.get("email", ""),
                 "role": normalized.get("role", "student"),
+                "reg_no": normalized.get("reg_no") or None,
                 "created_at": normalized.get("created_at", ""),
                 "interview_count": interview_map.get(user_id, 0),
                 "report_count": report_map.get(user_id, 0),

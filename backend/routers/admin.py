@@ -1,11 +1,14 @@
 import json
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
+from fastapi.responses import StreamingResponse
 from auth.jwt import require_role, get_current_user
 from schemas.admin import (
     JobRoleCreate, JobRoleUpdate,
     QuestionCreate, QuestionUpdate,
     RoleRequirementCreate,
     TopicCreate, TopicUpdate, TopicPublishUpdate,
+    GroupTestCreate, GroupTestUpdate, GroupTestPublishUpdate,
+    ChatbotQueryRequest, ChatbotExportRequest, ChatbotStudentUpdate,
 )
 from services.admin_service import (
     create_role, update_role, delete_role, list_roles,
@@ -21,6 +24,16 @@ from services.job_description_service import (
     list_admin_job_descriptions,
     update_admin_job_description,
     delete_admin_job_description,
+    parse_jd_from_file,
+)
+from services.group_test_service import (
+    create_group_test,
+    list_group_tests,
+    get_group_test,
+    update_group_test,
+    delete_group_test,
+    set_group_test_publish,
+    get_group_test_results_admin,
 )
 from services.analytics_service import get_admin_analytics
 
@@ -417,6 +430,33 @@ async def delete_admin_job_description_endpoint(
     return {"message": "Job description deleted"}
 
 
+@router.post("/job-descriptions/parse-file")
+async def parse_admin_jd_file(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_role("admin")),
+):
+    """Upload a JD file (PDF/DOCX/TXT) and extract structured fields via AI (admin only)."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+
+    allowed_ext = {".pdf", ".doc", ".docx", ".txt"}
+    ext = "." + file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
+    if ext not in allowed_ext:
+        raise HTTPException(status_code=400, detail="Unsupported file type. Allowed: PDF, DOC, DOCX, TXT")
+
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large. Maximum 10MB")
+
+    try:
+        result = await parse_jd_from_file(file.filename, content)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse JD file: {str(e)}")
+
+
 @router.delete("/users/{user_id}")
 async def delete_admin_user_endpoint(
     user_id: str,
@@ -432,3 +472,143 @@ async def delete_admin_user_endpoint(
         detail = str(e)
         status_code = 404 if "not found" in detail.lower() else 400
         raise HTTPException(status_code=status_code, detail=detail)
+
+
+# ─── Group Tests ─────────────────────────────────────────────────────────────
+
+@router.get("/group-tests")
+async def list_group_tests_endpoint(
+    current_user: dict = Depends(require_role("admin")),
+):
+    items = await list_group_tests(only_published=False)
+    return {"items": items}
+
+
+@router.post("/group-tests")
+async def create_group_test_endpoint(
+    request: GroupTestCreate,
+    current_user: dict = Depends(require_role("admin")),
+):
+    try:
+        result = await create_group_test(
+            name=request.name,
+            description=request.description,
+            topic_ids=request.topic_ids,
+            time_limit_minutes=request.time_limit_minutes,
+            max_attempts=request.max_attempts,
+            created_by=current_user["user_id"],
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/group-tests/{group_test_id}")
+async def get_group_test_endpoint(
+    group_test_id: str,
+    current_user: dict = Depends(require_role("admin")),
+):
+    try:
+        return await get_group_test(group_test_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.put("/group-tests/{group_test_id}")
+async def update_group_test_endpoint(
+    group_test_id: str,
+    request: GroupTestUpdate,
+    current_user: dict = Depends(require_role("admin")),
+):
+    try:
+        return await update_group_test(group_test_id, request.model_dump(exclude_none=True))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/group-tests/{group_test_id}")
+async def delete_group_test_endpoint(
+    group_test_id: str,
+    current_user: dict = Depends(require_role("admin")),
+):
+    success = await delete_group_test(group_test_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Group test not found")
+    return {"message": "Group test deleted"}
+
+
+@router.patch("/group-tests/{group_test_id}/publish")
+async def publish_group_test_endpoint(
+    group_test_id: str,
+    request: GroupTestPublishUpdate,
+    current_user: dict = Depends(require_role("admin")),
+):
+    try:
+        return await set_group_test_publish(group_test_id, request.is_published)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/group-tests/{group_test_id}/results")
+async def get_group_test_results_endpoint(
+    group_test_id: str,
+    current_user: dict = Depends(require_role("admin")),
+):
+    results = await get_group_test_results_admin(group_test_id)
+    return {"items": results}
+
+
+# ─── Chatbot ──────────────────────────────────────────────────────────────────
+from services.chatbot_service import (
+    process_chatbot_query,
+    update_student_info,
+    generate_excel,
+)
+
+
+@router.post("/chatbot/query")
+async def chatbot_query(
+    request: ChatbotQueryRequest,
+    current_user: dict = Depends(require_role("admin")),
+):
+    """AI-powered student filter — returns ranked student rows."""
+    try:
+        result = await process_chatbot_query(request.query, request.jd_id)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/chatbot/export-excel")
+async def chatbot_export_excel(
+    request: ChatbotExportRequest,
+    current_user: dict = Depends(require_role("admin")),
+):
+    """Generate styled Excel (.xlsx) from current chatbot result rows."""
+    try:
+        bio = generate_excel(
+            rows=request.rows,
+            topic_columns=request.topic_columns,
+            group_test_name=request.group_test_name,
+        )
+        safe_name = request.group_test_name.replace(" ", "_").replace("/", "-")[:40]
+        filename = f"{safe_name}_students.xlsx"
+        return StreamingResponse(
+            bio,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/chatbot/students")
+async def chatbot_update_student(
+    request: ChatbotStudentUpdate,
+    current_user: dict = Depends(require_role("admin")),
+):
+    """Admin corrects a student's reg_no or name."""
+    try:
+        return await update_student_info(request.user_id, request.reg_no, request.name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

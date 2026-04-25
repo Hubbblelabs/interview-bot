@@ -57,6 +57,8 @@ interface StartInterviewModalProps {
   jobDescriptions: JobDescription[];
   selectedRoleInput: string;
   setSelectedRoleInput: (v: string) => void;
+  isCustomRoleMode: boolean;
+  setIsCustomRoleMode: (v: boolean) => void;
   interviewMode: "resume" | "topic";
   setInterviewMode: (v: "resume" | "topic") => void;
   selectedTopicId: string;
@@ -80,6 +82,8 @@ function StartInterviewModal({
   jobDescriptions,
   selectedRoleInput,
   setSelectedRoleInput,
+  isCustomRoleMode,
+  setIsCustomRoleMode,
   interviewMode,
   setInterviewMode,
   selectedTopicId,
@@ -93,8 +97,6 @@ function StartInterviewModal({
   startInterviewStatus,
   startInterview,
 }: StartInterviewModalProps) {
-  if (!open) return null;
-
   const recommendedRoleOptions = (profile?.resume?.parsed_data?.recommended_roles || [])
     .map((role) => (role || "").trim())
     .filter((role) => role.length > 0);
@@ -102,12 +104,15 @@ function StartInterviewModal({
   const recommendedRoleKeys = new Set(
     recommendedRoleOptions.map((role) => role.toLowerCase())
   );
+
   const selectedRoleValue = selectedRoleInput.trim();
   const selectedRoleIsRecommended = recommendedRoleKeys.has(selectedRoleValue.toLowerCase());
-  const roleSelectValue = selectedRoleValue
-    ? (selectedRoleIsRecommended ? selectedRoleValue : "__custom__")
-    : "";
-  const showCustomRoleInput = recommendedRoleOptions.length === 0 || roleSelectValue === "__custom__";
+  const roleSelectValue = isCustomRoleMode
+    ? "__custom__"
+    : (selectedRoleIsRecommended ? selectedRoleValue : "");
+  const showCustomRoleInput = recommendedRoleOptions.length === 0 || isCustomRoleMode;
+
+  if (!open) return null;
 
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
@@ -156,12 +161,14 @@ function StartInterviewModal({
                   onChange={(e) => {
                     const value = e.target.value;
                     if (value === "__custom__") {
+                      setIsCustomRoleMode(true);
                       setSelectedRoleInput("");
                       return;
                     }
+                    setIsCustomRoleMode(false);
                     setSelectedRoleInput(value);
                   }}
-                  className="w-full"
+                  className="w-full text-foreground"
                 >
                   <option value="">Select interview role</option>
 
@@ -182,9 +189,12 @@ function StartInterviewModal({
                   <input
                     type="text"
                     value={selectedRoleInput}
-                    onChange={(e) => setSelectedRoleInput(e.target.value)}
+                    onChange={(e) => {
+                      setIsCustomRoleMode(true);
+                      setSelectedRoleInput(e.target.value);
+                    }}
                     placeholder="Type custom role"
-                    className="mt-2 w-full px-3.5 py-2.5 rounded-lg bg-background border border-border focus:outline-none focus:border-primary transition-colors text-sm"
+                    className="mt-2 w-full px-3.5 py-2.5 rounded-lg bg-background border border-border focus:outline-none focus:border-primary transition-colors text-sm text-foreground"
                   />
                 )}
 
@@ -302,6 +312,7 @@ export default function DashboardPage() {
   const [topics, setTopics] = useState<Topic[]>([]);
   const [jobDescriptions, setJobDescriptions] = useState<JobDescription[]>([]);
   const [selectedRoleInput, setSelectedRoleInput] = useState("");
+  const [isCustomRoleMode, setIsCustomRoleMode] = useState(false);
   const [interviewMode, setInterviewMode] = useState<"resume" | "topic">("resume");
   const [selectedTopicId, setSelectedTopicId] = useState("");
   const [selectedJdId, setSelectedJdId] = useState("");
@@ -425,8 +436,13 @@ export default function DashboardPage() {
       setJobDescriptions(jdItems);
       if (jdItems.length > 0) setSelectedJdId(jdItems[0].id);
       const recRoles = profileRes.data?.resume?.parsed_data?.recommended_roles;
-      if (recRoles && recRoles.length > 0) setSelectedRoleInput(recRoles[0]);
-      else setSelectedRoleInput("");
+      if (recRoles && recRoles.length > 0) {
+        setSelectedRoleInput(recRoles[0]);
+        setIsCustomRoleMode(false);
+      } else {
+        setSelectedRoleInput("");
+        setIsCustomRoleMode(false);
+      }
     } catch (err) {
       console.error("Failed to fetch dashboard data", err);
     } finally {
@@ -605,6 +621,8 @@ export default function DashboardPage() {
         jobDescriptions={jobDescriptions}
         selectedRoleInput={selectedRoleInput}
         setSelectedRoleInput={setSelectedRoleInput}
+        isCustomRoleMode={isCustomRoleMode}
+        setIsCustomRoleMode={setIsCustomRoleMode}
         interviewMode={interviewMode}
         setInterviewMode={setInterviewMode}
         selectedTopicId={selectedTopicId}
