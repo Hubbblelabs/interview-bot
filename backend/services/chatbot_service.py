@@ -3,6 +3,7 @@
 import json
 import re
 from collections import defaultdict
+from datetime import datetime, timezone, timedelta
 from io import BytesIO
 
 from bson import ObjectId
@@ -403,3 +404,263 @@ def generate_excel(rows: list[dict], topic_columns: list[dict], group_test_name:
     wb.save(bio)
     bio.seek(0)
     return bio
+
+
+# ─── Structured Student Filter (no Gemini) ───────────────────────────────────
+
+def _parse_date(date_str: str | None, end_of_day: bool = False):
+    """Parse YYYY-MM-DD string to UTC-aware datetime, or None."""
+    if not date_str:
+        return None
+    try:
+        dt = datetime.strptime(date_str.strip(), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        if end_of_day:
+            dt = dt + timedelta(days=1)
+        return dt
+    except ValueError:
+        return None
+
+
+def _compute_duration(started_at, completed_at) -> float | None:
+    """Duration in minutes, rounded to 1 dp. Returns None if either timestamp missing."""
+    if started_at is None or completed_at is None:
+        return None
+    try:
+        # Handle both datetime objects and ISO strings
+        if isinstance(started_at, str):
+            started_at = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        if isinstance(completed_at, str):
+            completed_at = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+        delta = completed_at - started_at
+        return round(max(delta.total_seconds(), 0) / 60, 1)
+    except Exception:
+        return None
+
+
+async def filter_students_structured(
+    group_test_ids: list[str] | None,
+    jd_id: str | None,
+    start_date: str | None,
+    end_date: str | None,
+    top_k: int | None,
+    min_score: float | None,
+    sort_fields: list[str] | None = None,
+    sort_orders: list[str] | None = None,
+) -> dict:
+    """Structured student filter — no Gemini, explicit params, composable."""
+    db = get_db()
+
+    # ── Fetch all group tests for metadata ────────────────────────────────────
+    gt_cursor = db[GROUP_TESTS].find({}).sort("created_at", -1)
+    gt_docs = await gt_cursor.to_list(length=300)
+    all_group_tests: dict[str, dict] = {
+        str(d["_id"]): {
+            "id": str(d["_id"]),
+            "name": d.get("name", ""),
+            "topic_ids": d.get("topic_ids") or [],
+        }
+        for d in gt_docs
+    }
+
+    # ── Fetch JD info if provided ─────────────────────────────────────────────
+    jd_content, jd_req_skills = (None, [])
+    if jd_id:
+        jd_content, jd_req_skills = await _jd_skills(jd_id, db)
+    use_jd_ranking = bool(jd_req_skills)
+
+    # ── Build MongoDB query ───────────────────────────────────────────────────
+    results_filter: dict = {}
+
+    if group_test_ids:
+        results_filter["group_test_id"] = {"$in": group_test_ids}
+
+    start_dt = _parse_date(start_date, end_of_day=False)
+    end_dt = _parse_date(end_date, end_of_day=True)
+    if start_dt or end_dt:
+        date_filter: dict = {}
+        if start_dt:
+            date_filter["$gte"] = start_dt
+        if end_dt:
+            date_filter["$lt"] = end_dt
+        results_filter["started_at"] = date_filter
+
+    results_cursor = db[GROUP_TEST_RESULTS].find(results_filter)
+    results_docs = await results_cursor.to_list(length=3000)
+
+    # ── Collect topic columns from selected group tests ───────────────────────
+    selected_gt_ids: set[str] = (
+        set(group_test_ids) if group_test_ids
+        else {str(d["_id"]) for d in gt_docs}
+    )
+
+    topic_columns: list[dict] = []
+    topic_seen: set[str] = set()
+    group_test_name = "All Group Tests"
+
+    if group_test_ids and len(group_test_ids) == 1:
+        gt = all_group_tests.get(group_test_ids[0])
+        if gt:
+            group_test_name = gt["name"]
+            for tid in gt["topic_ids"]:
+                if tid not in topic_seen:
+                    topic_seen.add(tid)
+                    try:
+                        t = await db[TOPICS].find_one({"_id": ObjectId(tid)})
+                    except Exception:
+                        t = None
+                    if t:
+                        topic_columns.append({"id": tid, "name": t.get("name", tid)})
+    elif group_test_ids and len(group_test_ids) > 1:
+        names = [all_group_tests[gid]["name"] for gid in group_test_ids if gid in all_group_tests]
+        group_test_name = ", ".join(names) if names else "Multiple Tests"
+        for gid in group_test_ids:
+            gt = all_group_tests.get(gid)
+            if not gt:
+                continue
+            for tid in gt["topic_ids"]:
+                if tid not in topic_seen:
+                    topic_seen.add(tid)
+                    try:
+                        t = await db[TOPICS].find_one({"_id": ObjectId(tid)})
+                    except Exception:
+                        t = None
+                    if t:
+                        topic_columns.append({"id": tid, "name": t.get("name", tid)})
+
+    # ── Group by (user_id, group_test_id) → pick best attempt ────────────────
+    attempts_map: dict[tuple, list] = defaultdict(list)
+    for r in results_docs:
+        uid = r.get("user_id", "")
+        gtid = r.get("group_test_id", "")
+        if uid:
+            attempts_map[(uid, gtid)].append(r)
+
+    rows: list[dict] = []
+
+    for (uid, gt_id), attempts in attempts_map.items():
+        best = None
+        for attempt in attempts:
+            attempt = await _refresh_topic_statuses(attempt, db)
+            score = attempt.get("overall_score") or 0
+            if best is None or score > (best.get("overall_score") or 0):
+                best = attempt
+
+        user = await _user_info(uid, db)
+
+        # Per-topic scores
+        topic_scores: dict[str, dict] = {}
+        for tr in best.get("topic_results") or []:
+            tid = tr.get("topic_id", "")
+            topic_scores[tid] = {
+                "topic_name": tr.get("topic_name", ""),
+                "score": tr.get("overall_score"),
+                "status": tr.get("status", "pending"),
+            }
+
+        # JD skill match
+        skill_match: float | None = None
+        if use_jd_ranking:
+            skills_doc = await db[SKILLS].find_one({"user_id": uid})
+            student_skills = (skills_doc or {}).get("skills") or []
+            skill_match = _skill_match_pct(student_skills, jd_req_skills)
+
+        # Attempt time & duration
+        started_at = best.get("started_at")
+        completed_at = best.get("completed_at")
+        attempt_time: str | None = None
+        if started_at is not None:
+            try:
+                attempt_time = started_at.isoformat() if isinstance(started_at, datetime) else str(started_at)
+            except Exception:
+                attempt_time = None
+
+        # Collect topic columns dynamically when showing all tests
+        if not group_test_ids:
+            gt = all_group_tests.get(gt_id)
+            if gt:
+                for tid in gt["topic_ids"]:
+                    if tid not in topic_seen:
+                        topic_seen.add(tid)
+                        try:
+                            t = await db[TOPICS].find_one({"_id": ObjectId(tid)})
+                        except Exception:
+                            t = None
+                        if t:
+                            topic_columns.append({"id": tid, "name": t.get("name", tid)})
+
+        gt_info = all_group_tests.get(gt_id, {})
+
+        row = {
+            "user_id": uid,
+            "reg_no": user["reg_no"],
+            "name": user["name"],
+            "email": user["email"],
+            "group_test_id": gt_id,
+            "group_test_name": best.get("group_test_name") or gt_info.get("name", ""),
+            "overall_score": round(best.get("overall_score") or 0, 1),
+            "total_attempts": len(attempts),
+            "status": best.get("status", "in_progress"),
+            "topic_scores": topic_scores,
+            "skill_match": skill_match,
+            "rank": 0,
+            "attempt_time": attempt_time,
+            "duration_minutes": _compute_duration(started_at, completed_at),
+        }
+        rows.append(row)
+
+    # ── Min score filter ──────────────────────────────────────────────────────
+    if min_score is not None:
+        rows = [r for r in rows if (r["overall_score"] or 0) >= min_score]
+
+    # ── Multi-sort ────────────────────────────────────────────────────────────
+    _fields = sort_fields if sort_fields else ["time"]
+    _orders = sort_orders if sort_orders else ["desc"]
+    _INF = float("inf")
+    _NEG_INF = float("-inf")
+
+    def _row_key(r: dict, field: str, order: str):
+        """Return a comparable key, handling None with order-aware sentinel."""
+        desc = order.lower() == "desc"
+        if field == "score":
+            v = r.get("overall_score") or 0
+            return -v if desc else v
+        elif field == "duration":
+            v = r.get("duration_minutes")
+            if v is None:
+                return _INF  # always sort None to end
+            return -v if desc else v
+        else:  # "time"
+            v = r.get("attempt_time") or ""
+            # For strings, desc means we negate via reverse tuple trick below
+            return v
+
+    # Apply sorts in reverse priority order (stable sort)
+    paired = list(zip(_fields, _orders))
+    for field, order in reversed(paired):
+        desc = order.lower() == "desc"
+        if field == "time":
+            rows.sort(key=lambda r: r.get("attempt_time") or "", reverse=desc)
+        elif field == "score":
+            rows.sort(key=lambda r: r.get("overall_score") or 0, reverse=desc)
+        elif field == "duration":
+            rows.sort(
+                key=lambda r: r["duration_minutes"] if r["duration_minutes"] is not None
+                else (_NEG_INF if desc else _INF),
+                reverse=desc,
+            )
+
+    # ── Assign ranks ──────────────────────────────────────────────────────────
+    for i, row in enumerate(rows):
+        row["rank"] = i + 1
+
+    # ── Top-K slice ───────────────────────────────────────────────────────────
+    if top_k and top_k > 0:
+        rows = rows[:top_k]
+
+    return {
+        "group_test_name": group_test_name,
+        "group_test_id": group_test_ids[0] if group_test_ids and len(group_test_ids) == 1 else None,
+        "topic_columns": topic_columns,
+        "rows": rows,
+        "total": len(rows),
+    }

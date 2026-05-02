@@ -111,7 +111,7 @@ class RoleRequirementResponse(BaseModel):
     level: str
 
 
-# ── Chatbot ───────────────────────────────────────────────────────────────────
+# ── Chatbot (legacy) ──────────────────────────────────────────────────────────
 
 class ChatbotQueryRequest(BaseModel):
     query: str
@@ -128,3 +128,22 @@ class ChatbotStudentUpdate(BaseModel):
     user_id: str
     reg_no: Optional[str] = None
     name: Optional[str] = None
+
+
+# ── Structured Student Filter ─────────────────────────────────────────────────
+
+class StudentFilterRequest(BaseModel):
+    group_test_ids: Optional[List[str]] = None   # None = all tests
+    jd_id: Optional[str] = None
+    start_date: Optional[str] = None             # "YYYY-MM-DD"
+    end_date: Optional[str] = None               # "YYYY-MM-DD"
+    top_k: Optional[int] = None
+    min_score: Optional[float] = None
+    sort_fields: List[str] = ["time"]            # ordered priority: "time"|"score"|"duration"
+    sort_orders: List[str] = ["desc"]            # matching orders: "asc"|"desc"
+
+
+class StudentFilterExportRequest(BaseModel):
+    rows: List[dict]
+    topic_columns: List[dict]
+    group_test_name: str

@@ -563,7 +563,66 @@ from services.chatbot_service import (
     process_chatbot_query,
     update_student_info,
     generate_excel,
+    filter_students_structured,
 )
+from schemas.admin import StudentFilterRequest, StudentFilterExportRequest
+
+
+@router.post("/students/filter")
+async def students_filter(
+    request: StudentFilterRequest,
+    current_user: dict = Depends(require_role("admin")),
+):
+    """Structured student filter — no AI, direct params (sort + date range + multi-test)."""
+    try:
+        result = await filter_students_structured(
+            group_test_ids=request.group_test_ids,
+            jd_id=request.jd_id,
+            start_date=request.start_date,
+            end_date=request.end_date,
+            top_k=request.top_k,
+            min_score=request.min_score,
+            sort_fields=request.sort_fields,
+            sort_orders=request.sort_orders,
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/students/export-excel")
+async def students_export_excel(
+    request: StudentFilterExportRequest,
+    current_user: dict = Depends(require_role("admin")),
+):
+    """Generate styled Excel for structured student filter results."""
+    try:
+        bio = generate_excel(
+            rows=request.rows,
+            topic_columns=request.topic_columns,
+            group_test_name=request.group_test_name,
+        )
+        safe_name = request.group_test_name.replace(" ", "_").replace("/", "-")[:40]
+        filename = f"{safe_name}_students.xlsx"
+        return StreamingResponse(
+            bio,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/students")
+async def update_student(
+    request: ChatbotStudentUpdate,
+    current_user: dict = Depends(require_role("admin")),
+):
+    """Admin corrects a student's reg_no or name (shared by both filter endpoints)."""
+    try:
+        return await update_student_info(request.user_id, request.reg_no, request.name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/chatbot/query")
