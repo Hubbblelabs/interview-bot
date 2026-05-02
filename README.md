@@ -1,3 +1,14 @@
+---
+title: Interview Bot
+emoji: 🤖
+colorFrom: blue
+colorTo: purple
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
+
 # Interview Bot - AI Mock Interview Trainer
 
 An end-to-end AI-powered mock interview platform for students and job seekers.
