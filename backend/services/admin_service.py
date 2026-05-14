@@ -3,7 +3,7 @@ import json
 import re
 from datetime import datetime
 from database import get_db
-from models.collections import JOB_ROLES, ROLE_REQUIREMENTS, QUESTIONS, TOPICS, TOPIC_QUESTIONS, SESSIONS, USERS, RESULTS, RESUMES, SKILLS, ANSWERS, JOB_DESCRIPTIONS
+from models.collections import JOB_ROLES, ROLE_REQUIREMENTS, QUESTIONS, TOPICS, TOPIC_QUESTIONS, SESSIONS, USERS, RESULTS, RESUMES, SKILLS, ANSWERS, JOB_DESCRIPTIONS, DEPARTMENTS, APP_SETTINGS
 from utils.helpers import utc_now, str_objectid, str_objectids
 from utils.gemini import call_gemini
 from utils.resume_text import extract_resume_text
@@ -633,3 +633,81 @@ async def delete_admin_user(target_user_id: str, current_admin_user_id: str) -> 
 
     result = await db[USERS].delete_one({"_id": ObjectId(target_user_id)})
     return result.deleted_count > 0
+
+
+# ─── Departments ───────────────────────────────────────────────────
+
+async def list_departments() -> list:
+    db = get_db()
+    cursor = db[DEPARTMENTS].find().sort("code", 1)
+    docs = await cursor.to_list(length=500)
+    return str_objectids(docs)
+
+
+async def create_department(name: str, code: str) -> dict:
+    db = get_db()
+    name = name.strip()
+    code = code.strip().upper()
+    if not name or not code:
+        raise ValueError("Name and code are required")
+    existing = await db[DEPARTMENTS].find_one({"code": code})
+    if existing:
+        raise ValueError(f"Department with code '{code}' already exists")
+    doc = {"name": name, "code": code, "created_at": utc_now()}
+    result = await db[DEPARTMENTS].insert_one(doc)
+    doc["_id"] = result.inserted_id
+    return str_objectid(doc)
+
+
+async def delete_department(dept_id: str) -> bool:
+    db = get_db()
+    result = await db[DEPARTMENTS].delete_one({"_id": ObjectId(dept_id)})
+    return result.deleted_count > 0
+
+
+# ─── App Settings (maintenance mode, etc.) ───────────────────────────────
+
+async def get_app_setting(key: str, default=None):
+    db = get_db()
+    doc = await db[APP_SETTINGS].find_one({"key": key})
+    if doc is None:
+        return default
+    return doc.get("value", default)
+
+
+async def set_app_setting(key: str, value) -> None:
+    db = get_db()
+    await db[APP_SETTINGS].update_one(
+        {"key": key},
+        {"$set": {"key": key, "value": value, "updated_at": utc_now()}},
+        upsert=True,
+    )
+
+
+async def get_maintenance_status() -> dict:
+    enabled = await get_app_setting("maintenance_enabled", False)
+    message = await get_app_setting("maintenance_message", "The platform is currently under maintenance. Please check back later.")
+    return {"enabled": bool(enabled), "message": message}
+
+
+async def set_maintenance_status(enabled: bool, message: str | None = None) -> dict:
+    await set_app_setting("maintenance_enabled", enabled)
+    if message is not None:
+        await set_app_setting("maintenance_message", message)
+    return await get_maintenance_status()
+
+
+async def get_joining_years() -> list:
+    years = await get_app_setting("joining_years", None)
+    if years is None:
+        # Default: last 7 years as 2-digit strings
+        from datetime import date
+        current = date.today().year
+        years = [str(y)[2:] for y in range(current - 6, current + 1)]
+    return years
+
+
+async def set_joining_years(years: list) -> list:
+    cleaned = [str(y).strip() for y in years if str(y).strip()]
+    await set_app_setting("joining_years", cleaned)
+    return cleaned

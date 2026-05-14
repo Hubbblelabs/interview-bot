@@ -85,6 +85,9 @@ class GroupTestCreate(BaseModel):
     topic_ids: List[str]
     time_limit_minutes: Optional[int] = None
     max_attempts: int = 1
+    allowed_years: Optional[List[str]] = None
+    allowed_dept_codes: Optional[List[str]] = None
+    allowed_user_ids: Optional[List[str]] = None
 
 
 class GroupTestUpdate(BaseModel):
@@ -93,6 +96,9 @@ class GroupTestUpdate(BaseModel):
     topic_ids: Optional[List[str]] = None
     time_limit_minutes: Optional[int] = None
     max_attempts: Optional[int] = None
+    allowed_years: Optional[List[str]] = None
+    allowed_dept_codes: Optional[List[str]] = None
+    allowed_user_ids: Optional[List[str]] = None
 
 
 class GroupTestPublishUpdate(BaseModel):
@@ -109,6 +115,24 @@ class RoleRequirementResponse(BaseModel):
     role_id: str
     skill: str
     level: str
+
+
+# ── Department ───────────────────────────────────────────────────────────────
+
+class DepartmentCreate(BaseModel):
+    name: str
+    code: str  # e.g. "243"
+
+
+# ── App Settings ─────────────────────────────────────────────────────────────
+
+class MaintenanceModeUpdate(BaseModel):
+    enabled: bool
+    message: Optional[str] = None
+
+
+class JoiningYearsUpdate(BaseModel):
+    years: List[str]  # e.g. ["20", "21", "22"]
 
 
 # ── Chatbot (legacy) ──────────────────────────────────────────────────────────

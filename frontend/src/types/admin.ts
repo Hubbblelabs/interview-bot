@@ -111,6 +111,16 @@ export interface GroupTest {
   is_published: boolean;
   created_by: string;
   created_at: string;
+  allowed_years?: string[] | null;
+  allowed_dept_codes?: string[] | null;
+  allowed_user_ids?: string[] | null;
+}
+
+export interface Department {
+  id: string;
+  name: string;
+  code: string;
+  created_at: string;
 }
 
 export interface GroupTestTopicResult {

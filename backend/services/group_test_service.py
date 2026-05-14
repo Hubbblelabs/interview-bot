@@ -4,6 +4,21 @@ from models.collections import GROUP_TESTS, GROUP_TEST_RESULTS, TOPICS, USERS, R
 from utils.helpers import utc_now, str_objectid, str_objectids
 
 
+def _parse_reg_no(reg_no: str | None) -> dict | None:
+    """Parse a 12-digit reg number: CCCCYYDDDIII
+    CCCC = college code, YY = year, DDD = dept code, III = student id.
+    Returns None if reg_no is absent or wrong length.
+    """
+    if not reg_no or len(reg_no) != 12:
+        return None
+    return {
+        "college_code": reg_no[0:4],
+        "year": reg_no[4:6],
+        "dept_code": reg_no[6:9],
+        "student_id": reg_no[9:12],
+    }
+
+
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
 async def _enrich_group_test(doc: dict, db) -> dict:
@@ -76,6 +91,10 @@ async def create_group_test(
     time_limit_minutes: int | None,
     max_attempts: int,
     created_by: str,
+    allowed_college_codes: list[str] | None = None,
+    allowed_years: list[str] | None = None,
+    allowed_dept_codes: list[str] | None = None,
+    allowed_user_ids: list[str] | None = None,
 ) -> dict:
     db = get_db()
 
@@ -102,18 +121,49 @@ async def create_group_test(
         "is_published": False,
         "created_by": created_by,
         "created_at": utc_now(),
+        "allowed_college_codes": [c.strip().upper() for c in (allowed_college_codes or []) if c.strip()] or None,
+        "allowed_years": [y.strip() for y in (allowed_years or []) if y.strip()] or None,
+        "allowed_dept_codes": [d.strip().upper() for d in (allowed_dept_codes or []) if d.strip()] or None,
+        "allowed_user_ids": [str(u).strip() for u in (allowed_user_ids or []) if str(u).strip()] or None,
     }
     result = await db[GROUP_TESTS].insert_one(doc)
     doc["_id"] = result.inserted_id
     return await _enrich_group_test(doc, db)
 
 
-async def list_group_tests(only_published: bool = False) -> list:
+async def list_group_tests(only_published: bool = False, user_reg_no: str | None = None, user_id: str | None = None) -> list:
     db = get_db()
     query = {"is_published": True} if only_published else {}
     cursor = db[GROUP_TESTS].find(query).sort("created_at", -1)
     docs = await cursor.to_list(length=200)
-    return [await _enrich_group_test(d, db) for d in docs]
+    enriched = [await _enrich_group_test(d, db) for d in docs]
+
+    # When listing for a student, filter by reg_no restrictions
+    if only_published and (user_reg_no or user_id):
+        parsed = _parse_reg_no(user_reg_no) if user_reg_no else None
+        filtered = []
+        for gt in enriched:
+            allowed_uids = gt.get("allowed_user_ids") or []
+            # If this student is explicitly in allowed_user_ids, always include
+            if user_id and user_id in allowed_uids:
+                filtered.append(gt)
+                continue
+            # Otherwise check dept/year restrictions (college codes no longer used)
+            yy = gt.get("allowed_years") or []
+            dd = gt.get("allowed_dept_codes") or []
+            has_restrictions = bool(yy or dd or allowed_uids)
+            if not has_restrictions:
+                filtered.append(gt)
+                continue
+            if parsed:
+                if yy and parsed["year"] not in yy:
+                    continue
+                if dd and parsed["dept_code"] not in dd:
+                    continue
+                filtered.append(gt)
+        return filtered
+
+    return enriched
 
 
 async def get_group_test(group_test_id: str) -> dict:
@@ -144,6 +194,17 @@ async def update_group_test(group_test_id: str, data: dict) -> dict:
     update_data = {k: v for k, v in data.items() if v is not None}
     if "max_attempts" in update_data:
         update_data["max_attempts"] = max(1, int(update_data["max_attempts"]))
+    # Allow clearing filter fields explicitly (empty list = clear restriction)
+    for fld in ("allowed_college_codes", "allowed_years", "allowed_dept_codes", "allowed_user_ids"):
+        if fld in data:
+            raw = data[fld]
+            if raw is None or raw == []:
+                update_data[fld] = None
+            else:
+                if fld == "allowed_years" or fld == "allowed_user_ids":
+                    update_data[fld] = [str(v).strip() for v in raw if str(v).strip()]
+                else:
+                    update_data[fld] = [str(v).strip().upper() for v in raw if str(v).strip()]
     update_data["updated_at"] = utc_now()
 
     await db[GROUP_TESTS].update_one(

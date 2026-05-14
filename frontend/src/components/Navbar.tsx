@@ -108,6 +108,7 @@ export default function Navbar() {
               <NavLink href="/admin/interviews" icon={Send} label="Make Interview" />
               <NavLink href="/admin/reports" icon={FileText} label="Reports" />
               <NavLink href="/admin/users" icon={Users} label="Users" />
+              <NavLink href="/admin/settings" icon={Settings} label="Settings" />
             </div>
 
             <div className="mt-auto pt-4 border-t border-border">

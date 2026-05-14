@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Navbar from "@/components/Navbar";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import api from "@/lib/api";
 import { GroupTest, GroupTestResult } from "@/types";
 import { Topic } from "@/types";
+import { Department } from "@/types/admin";
 import {
   Layers,
   Plus,
@@ -18,17 +19,32 @@ import {
   Loader2,
   X,
   BarChart3,
+  UserCheck,
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
 
+interface AdminUser {
+  id: string;
+  name: string;
+  email: string;
+  reg_no?: string | null;
+}
+
 export default function AdminGroupTestsPage() {
   const [items, setItems] = useState<GroupTest[]>([]);
   const [topics, setTopics] = useState<Topic[]>([]);
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [allUsers, setAllUsers] = useState<AdminUser[]>([]);
+  const [joiningYears, setJoiningYears] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
+  const [showTargetSection, setShowTargetSection] = useState(false);
+
+  // Additional students picker state
+  const [addStudentDept, setAddStudentDept] = useState<string>("");
 
   const [form, setForm] = useState({
     name: "",
@@ -36,6 +52,9 @@ export default function AdminGroupTestsPage() {
     topic_ids: [] as string[],
     time_limit_minutes: "",
     max_attempts: "1",
+    allowedDeptCodes: [] as string[],
+    allowedYears: [] as string[],
+    allowedUserIds: [] as string[],
   });
 
   useEffect(() => {
@@ -44,12 +63,18 @@ export default function AdminGroupTestsPage() {
 
   const fetchData = async () => {
     try {
-      const [groupRes, topicsRes] = await Promise.all([
+      const [groupRes, topicsRes, deptsRes, usersRes, yearsRes] = await Promise.all([
         api.get("/admin/group-tests"),
         api.get("/admin/topics"),
+        api.get("/admin/departments"),
+        api.get("/admin/users"),
+        api.get("/admin/settings/joining-years"),
       ]);
       setItems(groupRes.data.items || []);
       setTopics(topicsRes.data.topics || []);
+      setDepartments(deptsRes.data?.items || []);
+      setAllUsers(usersRes.data?.items || []);
+      setJoiningYears(yearsRes.data?.years || []);
     } catch (err) {
       console.error("Failed to load data", err);
     } finally {
@@ -60,7 +85,9 @@ export default function AdminGroupTestsPage() {
   const resetForm = () => {
     setEditingId(null);
     setShowForm(false);
-    setForm({ name: "", description: "", topic_ids: [], time_limit_minutes: "", max_attempts: "1" });
+    setShowTargetSection(false);
+    setAddStudentDept("");
+    setForm({ name: "", description: "", topic_ids: [], time_limit_minutes: "", max_attempts: "1", allowedDeptCodes: [], allowedYears: [], allowedUserIds: [] });
   };
 
   const editItem = (item: GroupTest) => {
@@ -71,7 +98,13 @@ export default function AdminGroupTestsPage() {
       topic_ids: item.topic_ids || [],
       time_limit_minutes: item.time_limit_minutes ? String(item.time_limit_minutes) : "",
       max_attempts: String(item.max_attempts ?? 1),
+      allowedDeptCodes: item.allowed_dept_codes || [],
+      allowedYears: item.allowed_years || [],
+      allowedUserIds: item.allowed_user_ids || [],
     });
+    const hasTargeting = (item.allowed_dept_codes?.length || 0) + (item.allowed_years?.length || 0) + (item.allowed_user_ids?.length || 0) > 0;
+    setShowTargetSection(hasTargeting);
+    setAddStudentDept("");
     setShowForm(true);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -102,6 +135,9 @@ export default function AdminGroupTestsPage() {
       topic_ids: form.topic_ids,
       time_limit_minutes: form.time_limit_minutes ? parseInt(form.time_limit_minutes) : null,
       max_attempts: parseInt(form.max_attempts) || 1,
+      allowed_dept_codes: form.allowedDeptCodes.length > 0 ? form.allowedDeptCodes : null,
+      allowed_years: form.allowedYears.length > 0 ? form.allowedYears : null,
+      allowed_user_ids: form.allowedUserIds.length > 0 ? form.allowedUserIds : null,
     };
 
     setSaving(true);
@@ -154,6 +190,15 @@ export default function AdminGroupTestsPage() {
 
   const scoreColor = (s: number) =>
     s >= 70 ? "text-green-400" : s >= 40 ? "text-yellow-400" : "text-red-400";
+
+  // Users from the selected dept for the additional-students picker
+  const usersInPickerDept = useMemo(() => {
+    if (!addStudentDept) return [];
+    return allUsers.filter((u) => {
+      if (!u.reg_no || u.reg_no.length < 9) return false;
+      return u.reg_no.slice(6, 9) === addStudentDept;
+    });
+  }, [allUsers, addStudentDept]);
 
   return (
     <ProtectedRoute requiredRole="admin">
@@ -263,6 +308,172 @@ export default function AdminGroupTestsPage() {
                   )}
                 </div>
 
+                {/* Target Students */}
+                <div className="border border-border rounded-xl overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setShowTargetSection((v) => !v)}
+                    className="cursor-pointer w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-left hover:bg-muted/30 transition-colors"
+                  >
+                    <span className="flex items-center gap-2">
+                      <UserCheck className="w-4 h-4" />
+                      Target Students{" "}
+                      <span className="text-xs text-muted-foreground font-normal">(optional — leave empty for all students)</span>
+                    </span>
+                    {showTargetSection ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                  </button>
+
+                  {showTargetSection && (
+                    <div className="px-4 pb-4 space-y-5 border-t border-border/60">
+                      {/* Department filter */}
+                      <div className="pt-4">
+                        <p className="text-xs font-medium mb-2">Departments (3-digit code from reg_no)</p>
+                        {departments.length === 0 ? (
+                          <p className="text-xs text-muted-foreground">No departments defined. <a href="/admin/settings" className="text-primary underline">Add departments in Settings.</a></p>
+                        ) : (
+                          <div className="flex flex-wrap gap-2">
+                            {departments.map((dept) => (
+                              <button
+                                key={dept.id}
+                                type="button"
+                                onClick={() =>
+                                  setForm((p) => ({
+                                    ...p,
+                                    allowedDeptCodes: p.allowedDeptCodes.includes(dept.code)
+                                      ? p.allowedDeptCodes.filter((c) => c !== dept.code)
+                                      : [...p.allowedDeptCodes, dept.code],
+                                  }))
+                                }
+                                className={`cursor-pointer px-3 py-1.5 rounded-lg text-xs border transition-all ${
+                                  form.allowedDeptCodes.includes(dept.code)
+                                    ? "bg-primary text-white border-primary"
+                                    : "bg-transparent text-muted-foreground border-border hover:border-primary/40"
+                                }`}
+                              >
+                                {dept.name} ({dept.code})
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Year filter */}
+                      <div>
+                        <p className="text-xs font-medium mb-2">Joining Years</p>
+                        {joiningYears.length === 0 ? (
+                          <p className="text-xs text-muted-foreground">No joining years configured. <a href="/admin/settings" className="text-primary underline">Add years in Settings.</a></p>
+                        ) : (
+                          <div className="flex flex-wrap gap-2">
+                            {joiningYears.map((y) => (
+                              <button
+                                key={y}
+                                type="button"
+                                onClick={() =>
+                                  setForm((p) => ({
+                                    ...p,
+                                    allowedYears: p.allowedYears.includes(y)
+                                      ? p.allowedYears.filter((v) => v !== y)
+                                      : [...p.allowedYears, y],
+                                  }))
+                                }
+                                className={`cursor-pointer px-3 py-1.5 rounded-lg text-xs border transition-all ${
+                                  form.allowedYears.includes(y)
+                                    ? "bg-primary text-white border-primary"
+                                    : "bg-transparent text-muted-foreground border-border hover:border-primary/40"
+                                }`}
+                              >
+                                20{y}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Additional Students */}
+                      <div>
+                        <p className="text-xs font-medium mb-1">Additional Students</p>
+                        <p className="text-xs text-muted-foreground mb-2">
+                          Add specific students from other departments. They get access regardless of dept/year filters above.
+                        </p>
+
+                        {/* Dept picker for filtering students */}
+                        <div className="flex flex-wrap gap-2 mb-3">
+                          <select
+                            className="app-control text-xs py-1.5 w-56"
+                            value={addStudentDept}
+                            onChange={(e) => setAddStudentDept(e.target.value)}
+                          >
+                            <option value="">Filter by department...</option>
+                            {departments.map((d) => (
+                              <option key={d.id} value={d.code}>{d.name} ({d.code})</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {/* Students list for selected dept */}
+                        {addStudentDept && (
+                          <div className="border border-border/60 rounded-lg max-h-48 overflow-y-auto mb-3">
+                            {usersInPickerDept.length === 0 ? (
+                              <p className="text-xs text-muted-foreground p-3">No students found in this department.</p>
+                            ) : (
+                              <div className="divide-y divide-border/40">
+                                {usersInPickerDept.map((u) => {
+                                  const selected = form.allowedUserIds.includes(u.id);
+                                  return (
+                                    <label
+                                      key={u.id}
+                                      className={`flex items-center gap-3 px-3 py-2 cursor-pointer text-xs hover:bg-muted/30 transition-colors ${selected ? "bg-primary/5" : ""}`}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={selected}
+                                        onChange={() =>
+                                          setForm((p) => ({
+                                            ...p,
+                                            allowedUserIds: selected
+                                              ? p.allowedUserIds.filter((id) => id !== u.id)
+                                              : [...p.allowedUserIds, u.id],
+                                          }))
+                                        }
+                                        className="accent-primary"
+                                      />
+                                      <span className="flex-1 min-w-0">
+                                        <span className="font-medium">{u.name}</span>
+                                        <span className="text-muted-foreground ml-1.5">{u.reg_no || u.email}</span>
+                                      </span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Selected additional students chips */}
+                        {form.allowedUserIds.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5">
+                            {form.allowedUserIds.map((uid) => {
+                              const u = allUsers.find((x) => x.id === uid);
+                              return (
+                                <span key={uid} className="flex items-center gap-1 px-2 py-1 text-xs rounded-full bg-violet-500/10 text-violet-400 border border-violet-500/20">
+                                  {u ? u.name : uid}
+                                  <button
+                                    type="button"
+                                    onClick={() => setForm((p) => ({ ...p, allowedUserIds: p.allowedUserIds.filter((id) => id !== uid) }))}
+                                    className="cursor-pointer hover:opacity-70"
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                </span>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <div className="flex gap-2">
                   <button
                     type="submit"
@@ -322,6 +533,20 @@ export default function AdminGroupTestsPage() {
                           : "No time limit"}{" "}
                         · Max {item.max_attempts} attempt{item.max_attempts !== 1 ? "s" : ""}
                       </p>
+                      {/* Targeting badges */}
+                      {((item.allowed_dept_codes?.length || 0) + (item.allowed_years?.length || 0) + (item.allowed_user_ids?.length || 0)) > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1.5">
+                          {(item.allowed_dept_codes || []).map((c) => (
+                            <span key={c} className="text-xs px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">Dept:{c}</span>
+                          ))}
+                          {(item.allowed_years || []).map((y) => (
+                            <span key={y} className="text-xs px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">20{y}</span>
+                          ))}
+                          {(item.allowed_user_ids?.length || 0) > 0 && (
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-400 border border-violet-500/20">+{item.allowed_user_ids!.length} student{item.allowed_user_ids!.length !== 1 ? "s" : ""}</span>
+                          )}
+                        </div>
+                      )}
                     </div>
                     <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
                       <Link

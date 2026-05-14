@@ -9,6 +9,7 @@ from schemas.admin import (
     TopicCreate, TopicUpdate, TopicPublishUpdate,
     GroupTestCreate, GroupTestUpdate, GroupTestPublishUpdate,
     ChatbotQueryRequest, ChatbotExportRequest, ChatbotStudentUpdate,
+    DepartmentCreate, MaintenanceModeUpdate, JoiningYearsUpdate,
 )
 from services.admin_service import (
     create_role, update_role, delete_role, list_roles,
@@ -18,6 +19,9 @@ from services.admin_service import (
     create_requirement, list_requirements, delete_requirement,
     list_quit_interviews, list_admin_reports, get_admin_report_detail,
     list_admin_users, delete_admin_user,
+    list_departments, create_department, delete_department,
+    get_maintenance_status, set_maintenance_status,
+    get_joining_years, set_joining_years,
 )
 from services.job_description_service import (
     create_job_description,
@@ -497,6 +501,9 @@ async def create_group_test_endpoint(
             time_limit_minutes=request.time_limit_minutes,
             max_attempts=request.max_attempts,
             created_by=current_user["user_id"],
+            allowed_years=request.allowed_years,
+            allowed_dept_codes=request.allowed_dept_codes,
+            allowed_user_ids=request.allowed_user_ids,
         )
         return result
     except ValueError as e:
@@ -671,3 +678,69 @@ async def chatbot_update_student(
         return await update_student_info(request.user_id, request.reg_no, request.name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ─── Departments ──────────────────────────────────────────────────────────────
+
+@router.get("/departments")
+async def list_departments_endpoint(
+    current_user: dict = Depends(require_role("admin")),
+):
+    items = await list_departments()
+    return {"items": items}
+
+
+@router.post("/departments")
+async def create_department_endpoint(
+    request: DepartmentCreate,
+    current_user: dict = Depends(require_role("admin")),
+):
+    try:
+        return await create_department(name=request.name, code=request.code)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/departments/{dept_id}")
+async def delete_department_endpoint(
+    dept_id: str,
+    current_user: dict = Depends(require_role("admin")),
+):
+    success = await delete_department(dept_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Department not found")
+    return {"message": "Deleted"}
+
+
+# ─── App Settings ───────────────────────────────────────────────────────────
+
+@router.get("/settings/maintenance")
+async def get_maintenance_endpoint(
+    current_user: dict = Depends(require_role("admin")),
+):
+    return await get_maintenance_status()
+
+
+@router.patch("/settings/maintenance")
+async def set_maintenance_endpoint(
+    request: MaintenanceModeUpdate,
+    current_user: dict = Depends(require_role("admin")),
+):
+    return await set_maintenance_status(enabled=request.enabled, message=request.message)
+
+
+@router.get("/settings/joining-years")
+async def get_joining_years_endpoint(
+    current_user: dict = Depends(require_role("admin")),
+):
+    years = await get_joining_years()
+    return {"years": years}
+
+
+@router.put("/settings/joining-years")
+async def set_joining_years_endpoint(
+    request: JoiningYearsUpdate,
+    current_user: dict = Depends(require_role("admin")),
+):
+    years = await set_joining_years(request.years)
+    return {"years": years}

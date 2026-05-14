@@ -71,6 +71,13 @@ async def health_check():
     return {"status": "healthy", "version": "1.0.0"}
 
 
+@app.get("/maintenance")
+async def public_maintenance_check():
+    """Public endpoint — returns maintenance status without requiring auth."""
+    from services.admin_service import get_maintenance_status
+    return await get_maintenance_status()
+
+
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",

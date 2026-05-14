@@ -216,8 +216,11 @@ async def parse_jd_file_for_user(
 async def list_available_group_tests(
     current_user: dict = Depends(get_current_user),
 ):
-    """List published group tests available to students."""
-    items = await list_group_tests(only_published=True)
+    """List published group tests available to students (filtered by reg_no if restrictions set)."""
+    db = get_db()
+    user_doc = await db[USERS].find_one({"_id": ObjectId(current_user["user_id"])})
+    reg_no = (user_doc or {}).get("reg_no") or None
+    items = await list_group_tests(only_published=True, user_reg_no=reg_no, user_id=current_user["user_id"])
     return {"items": items}
 
 
