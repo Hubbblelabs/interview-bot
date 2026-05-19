@@ -185,7 +185,7 @@ async def generate_report(session_id: str, user_id: str) -> dict:
             {"$set": {"status": "completed_with_report", "report_generated_at": utc_now()}},
         )
 
-    cleanup_interview_local_state(session_id)
+    await cleanup_interview_local_state(session_id)
 
     result_doc["id"] = result_doc_id
     return _json_safe(result_doc)

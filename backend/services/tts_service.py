@@ -1,6 +1,7 @@
 import asyncio
 import os
 import tempfile
+import weakref
 from typing import Tuple
 from collections import OrderedDict
 from functools import wraps
@@ -9,7 +10,9 @@ _MODEL_CACHE = {}
 _MODEL_LOCK = asyncio.Lock()
 _AUDIO_CACHE = OrderedDict()
 _AUDIO_CACHE_LOCK = asyncio.Lock()
-_SYNTHESIZE_LOCK = asyncio.Lock()
+# Per-cache-key locks: allows concurrent synthesis of different texts.
+# WeakValueDictionary lets GC collect locks when no synthesis is in progress.
+_SYNTHESIZE_LOCKS: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
 _TORCH_LOAD_PATCHED = False
 
 XTTS_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
@@ -200,6 +203,14 @@ def _build_audio_cache_key(text: str, voice_gender: str) -> str:
     return f"{(voice_gender or 'female').strip().lower()}::{text.strip()}"
 
 
+def _get_or_create_synthesize_lock(cache_key: str) -> asyncio.Lock:
+    lock = _SYNTHESIZE_LOCKS.get(cache_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _SYNTHESIZE_LOCKS[cache_key] = lock
+    return lock
+
+
 async def _get_cached_audio(cache_key: str) -> bytes | None:
     async with _AUDIO_CACHE_LOCK:
         value = _AUDIO_CACHE.get(cache_key)
@@ -265,7 +276,7 @@ async def synthesize_wav(text: str, voice_gender: str = "female") -> bytes:
     if cached:
         return cached
 
-    async with _SYNTHESIZE_LOCK:
+    async with _get_or_create_synthesize_lock(cache_key):
         # Recheck cache after waiting for lock in case another request already synthesized it.
         cached = await _get_cached_audio(cache_key)
         if cached:

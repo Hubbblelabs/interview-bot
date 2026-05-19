@@ -9,6 +9,7 @@ QUESTION_QUEUE_SUFFIX = "question_queue"
 QUESTION_BACKLOG_SUFFIX = "question_backlog"
 CONTEXT_CACHE_SUFFIX = "context_cache"
 ASKED_SET_SUFFIX = "asked_questions_set"
+QUEUED_SET_SUFFIX = "queued_fingerprints_set"
 QUESTION_PREFIX_RE = re.compile(
     r"^\s*(?:question|q)\s*#?\s*\d+(?:\s*of\s*\d+)?\s*[\:\-\)\.]\s*",
     re.IGNORECASE,
@@ -58,17 +59,28 @@ async def is_question_asked(redis, session_id: str, question_text: str) -> bool:
     return bool(await redis.sismember(key, fp))
 
 
-async def _has_in_list(redis, session_id: str, list_key: str, question_text: str) -> bool:
-    wanted = question_fingerprint(question_text)
-    if not wanted:
+async def _is_question_queued(redis, session_id: str, question_text: str) -> bool:
+    fp = question_fingerprint(question_text)
+    if not fp:
         return False
+    key = _key(session_id, QUEUED_SET_SUFFIX)
+    return bool(await redis.sismember(key, fp))
 
-    ids = await redis.lrange(list_key, 0, -1)
-    for qid in ids:
-        q = await redis.hgetall(f"session:{session_id}:q:{qid}")
-        if question_fingerprint(q.get("question", "")) == wanted:
-            return True
-    return False
+
+async def _mark_question_queued(redis, session_id: str, question_text: str, ttl_seconds: int) -> None:
+    fp = question_fingerprint(question_text)
+    if not fp:
+        return
+    key = _key(session_id, QUEUED_SET_SUFFIX)
+    await redis.sadd(key, fp)
+    await redis.expire(key, ttl_seconds)
+
+
+async def _unmark_question_queued(redis, session_id: str, question_text: str) -> None:
+    fp = question_fingerprint(question_text)
+    if not fp:
+        return
+    await redis.srem(_key(session_id, QUEUED_SET_SUFFIX), fp)
 
 
 async def _append_question_object(
@@ -118,9 +130,7 @@ async def enqueue_question(
 
     if await is_question_asked(redis, session_id, text):
         return None
-    if await _has_in_list(redis, session_id, queue_key, text):
-        return None
-    if await _has_in_list(redis, session_id, backlog_key, text):
+    if await _is_question_queued(redis, session_id, text):
         return None
 
     q_len = await redis.llen(queue_key)
@@ -132,6 +142,8 @@ async def enqueue_question(
         category=category,
         ttl_seconds=ttl_seconds,
     )
+
+    await _mark_question_queued(redis, session_id, text, ttl_seconds)
 
     if q_len < max_queue_size:
         await redis.rpush(queue_key, qid)
@@ -172,6 +184,8 @@ async def pop_next_question(redis, session_id: str) -> Tuple[Optional[str], Opti
     if not qid:
         return None, None
     q = await redis.hgetall(f"session:{session_id}:q:{qid}")
+    # Remove from queued set so the same text can be re-enqueued if needed.
+    await _unmark_question_queued(redis, session_id, q.get("question", ""))
     return qid, q
 
 

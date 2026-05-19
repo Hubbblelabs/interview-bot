@@ -61,10 +61,14 @@ async def get_admin_analytics() -> dict:
 
     top_performers = []
     for r in top_results:
-        user = await db[USERS].find_one({"_id": __import__("bson").ObjectId(r["_id"])})
+        user = None
+        try:
+            user = await db[USERS].find_one({"_id": __import__("bson").ObjectId(r["_id"])})
+        except Exception:
+            pass
         if not user:
-            # user_id might be stored as string
-            user = await db[USERS].find_one({"email": {"$exists": True}})
+            # user_id may be stored as a plain string instead of ObjectId.
+            user = await db[USERS].find_one({"user_id": r["_id"]})
         top_performers.append({
             "user_id": r["_id"],
             "name": user.get("name", "Unknown") if user else "Unknown",

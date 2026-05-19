@@ -2,7 +2,7 @@ import json
 import re
 import random
 
-from utils.gemini import call_gemini
+from utils.gemini import call_gemini, _QUESTION_LANGUAGE_RULE
 
 
 def _extract_json_object(text: str) -> str:
@@ -106,7 +106,8 @@ async def generate_resume_seed_questions(
         "count": count,
     }
 
-    prompt = f"""Generate exactly {count} resume interview questions.
+    prompt = f"""{_QUESTION_LANGUAGE_RULE}
+Generate exactly {count} resume interview questions.
 
 Input JSON:
 {json.dumps(payload, ensure_ascii=True)}
@@ -189,7 +190,8 @@ async def evaluate_and_generate_followup(
         "same_topic_streak": int(same_topic_streak or 0),
     }
 
-    prompt = f"""You are a strict technical interviewer.
+    prompt = f"""{_QUESTION_LANGUAGE_RULE}
+You are a strict technical interviewer.
 
 Input JSON:
 {json.dumps(payload, ensure_ascii=True)}
@@ -277,7 +279,8 @@ async def generate_topic_followup_batch(
         "count": count,
     }
 
-    prompt = f"""Generate exactly {count} topic-focused technical follow-up questions.
+    prompt = f"""{_QUESTION_LANGUAGE_RULE}
+Generate exactly {count} topic-focused technical follow-up questions.
 
 Input JSON:
 {json.dumps(payload, ensure_ascii=True)}

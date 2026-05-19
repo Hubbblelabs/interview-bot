@@ -2,6 +2,7 @@ import json
 import asyncio
 import random
 import re
+import weakref
 from time import perf_counter
 from bson import ObjectId
 from database import get_db, get_redis
@@ -25,6 +26,7 @@ from services.queue_service import (
     peek_next_question,
     pop_next_question,
     push_context_item,
+    question_fingerprint as _question_fingerprint,
     queue_size,
 )
 from services.tts_service import prefetch_wav
@@ -49,10 +51,9 @@ TOPIC_TOTAL_QUESTIONS = 10
 MAX_SAME_TOPIC_FOLLOWUPS = 2
 THIRD_FOLLOWUP_NEED_SCORE = 95
 
-# Local process memory summary requested in workflow.
-_LOCAL_SUMMARIES: dict[str, str] = {}
-_PREGEN_IN_FLIGHT: set[str] = set()
-_POST_SUBMIT_LOCKS: dict[str, asyncio.Lock] = {}
+# Per-session locks for concurrent submit protection.
+# WeakValueDictionary allows GC to collect locks once no coroutine holds them.
+_POST_SUBMIT_LOCKS: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
 _QUESTION_STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "how", "if", "in", "into",
     "is", "it", "of", "on", "or", "that", "the", "this", "to", "using", "what", "when", "with", "would",
@@ -76,13 +77,6 @@ def _safe_json_list(value: str) -> list:
         return data if isinstance(data, list) else []
     except Exception:
         return []
-
-
-def _question_fingerprint(text: str) -> str:
-    base = (text or "").strip().lower()
-    base = re.sub(r"[^a-z0-9\s]", " ", base)
-    base = re.sub(r"\s+", " ", base).strip()
-    return base
 
 
 def _question_token_set(text: str) -> set[str]:
@@ -149,11 +143,11 @@ def _unique_question_items(items: list[dict], *, excluded_questions: list[str], 
     return unique
 
 
-def _update_local_summary(session_id: str, question: str, answer: str) -> None:
-    existing = _LOCAL_SUMMARIES.get(session_id, "")
+async def _update_local_summary(redis, session_id: str, question: str, answer: str) -> None:
+    key = f"session:{session_id}:local_summary"
+    existing = (await redis.get(key)) or ""
     combined = f"{existing}\nQ: {question}\nA: {answer}".strip()
-    # Keep summary bounded in memory.
-    _LOCAL_SUMMARIES[session_id] = combined[-1500:]
+    await redis.set(key, combined[-1500:], ex=SESSION_TTL)
 
 
 def _safe_int(value, default: int = 0) -> int:
@@ -909,7 +903,7 @@ async def _generate_question_batch(
             count=target,
             start_question_number=1,
             previous_questions=previous_questions,
-            foundation_limit=0,
+            foundation_limit=3,
         )
         if seeded:
             last = seeded[-1].get("difficulty", current_difficulty)
@@ -1147,7 +1141,7 @@ async def _generate_mixed_followup_batch(
                 generated_count=generated_count + len(deduped_ai),
                 max_questions=max_questions,
                 current_difficulty=current_difficulty,
-                local_summary=_LOCAL_SUMMARIES.get(session_id),
+                local_summary=await redis.get(f"session:{session_id}:local_summary"),
                 batch_size=target - len(deduped_ai),
             )
             for item in refill:
@@ -1288,7 +1282,7 @@ async def _start_topic_interview(user_id: str, topic_id: str) -> dict:
     timer_seconds = topic.get("timer_seconds") if timer_enabled else None
 
     session_id = generate_id()
-    _LOCAL_SUMMARIES[session_id] = ""
+    await redis.set(f"session:{session_id}:local_summary", "", ex=SESSION_TTL)
 
     user_doc = None
     try:
@@ -1430,6 +1424,10 @@ async def _start_topic_interview(user_id: str, topic_id: str) -> dict:
 async def _async_pregenerate_next_batch(session_id: str) -> None:
     db = get_db()
     redis = get_redis()
+    pregen_key = f"session:{session_id}:pregen_in_flight"
+    acquired = await redis.set(pregen_key, "1", nx=True, ex=SESSION_TTL)
+    if not acquired:
+        return
     try:
         session = await redis.hgetall(f"session:{session_id}")
         if not session or session.get("status") != "in_progress":
@@ -1495,16 +1493,14 @@ async def _async_pregenerate_next_batch(session_id: str) -> None:
                 },
             )
     finally:
-        _PREGEN_IN_FLIGHT.discard(session_id)
+        await redis.delete(pregen_key)
 
 
 def _schedule_pregen(session_id: str, answered_count: int) -> None:
     # Start pre-generation as soon as Q1 is answered, while user is on Q2.
+    # Dedup is handled atomically inside the async task via Redis SETNX.
     if answered_count < 1:
         return
-    if session_id in _PREGEN_IN_FLIGHT:
-        return
-    _PREGEN_IN_FLIGHT.add(session_id)
     asyncio.create_task(_async_pregenerate_next_batch(session_id))
 
 
@@ -1567,7 +1563,7 @@ async def start_interview(
     intro_question = normalize_question_text(intro_question)
 
     session_id = generate_id()
-    _LOCAL_SUMMARIES[session_id] = ""
+    await redis.set(f"session:{session_id}:local_summary", "", ex=SESSION_TTL)
 
     first_id = generate_id()
     await redis.hset(
@@ -2099,7 +2095,7 @@ async def submit_answer(session_id: str, question_id: str, answer: str) -> dict:
             {"$set": {"max_questions": max_questions}},
         )
 
-    _update_local_summary(session_id, current_question_text, answer)
+    await _update_local_summary(redis, session_id, current_question_text, answer)
     await push_context_item(
         redis=redis,
         session_id=session_id,
@@ -2501,8 +2497,11 @@ async def get_session_qa(session_id: str) -> list:
     return qa_pairs
 
 
-def cleanup_interview_local_state(session_id: str) -> None:
-    """Cleanup process-local state for a completed session."""
-    _LOCAL_SUMMARIES.pop(session_id, None)
-    _PREGEN_IN_FLIGHT.discard(session_id)
-    _POST_SUBMIT_LOCKS.pop(session_id, None)
+async def cleanup_interview_local_state(session_id: str) -> None:
+    """Cleanup per-session state stored in Redis."""
+    redis = get_redis()
+    await redis.delete(
+        f"session:{session_id}:local_summary",
+        f"session:{session_id}:pregen_in_flight",
+    )
+    # _POST_SUBMIT_LOCKS uses WeakValueDictionary — GC handles cleanup automatically.

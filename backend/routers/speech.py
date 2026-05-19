@@ -1,14 +1,17 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 from time import perf_counter
 
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from auth.jwt import get_current_user
 from services.tts_service import synthesize_wav, warmup_xtts_model, get_xtts_warmup_state
 from services.stt_service import transcribe_audio_bytes, warmup_whisper_model
 from services.latency_service import record_latency
 
 router = APIRouter()
+limiter = Limiter(key_func=get_remote_address)
 
 
 class SpeechSynthesisRequest(BaseModel):
@@ -50,13 +53,15 @@ async def speech_warmup(current_user: dict = Depends(get_current_user)):
 
 
 @router.post("/synthesize")
+@limiter.limit("20/minute")
 async def synthesize_speech(
-    request: SpeechSynthesisRequest,
+    request: Request,
+    body: SpeechSynthesisRequest,
     current_user: dict = Depends(get_current_user),
 ):
     """Synthesize text to WAV bytes using Coqui TTS models."""
     try:
-        wav_bytes = await synthesize_wav(request.text, request.voice_gender)
+        wav_bytes = await synthesize_wav(body.text, body.voice_gender)
         return Response(content=wav_bytes, media_type="audio/wav")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -1,12 +1,15 @@
 from contextlib import asynccontextmanager
 import asyncio
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 import os
 import uvicorn
 
-
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from config import get_settings
 from database import connect_db, close_db
@@ -16,6 +19,7 @@ from services.stt_service import warmup_whisper_model
 from routers import auth, resume, profile, interview, reports, admin, speech
 
 settings = get_settings()
+limiter = Limiter(key_func=get_remote_address)
 
 
 @asynccontextmanager
@@ -47,11 +51,20 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
+# CORS — origins controlled by CORS_ALLOWED_ORIGINS env var (default "*")
+_raw_origins = settings.CORS_ALLOWED_ORIGINS.strip()
+_cors_origins: list[str] = (
+    ["*"] if _raw_origins == "*"
+    else [o.strip() for o in _raw_origins.split(",") if o.strip()]
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_raw_origins != "*",
     allow_methods=["*"],
     allow_headers=["*"],
 )

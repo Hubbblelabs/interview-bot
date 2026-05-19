@@ -9,6 +9,21 @@ from time import perf_counter
 from langchain_core.prompts import PromptTemplate
 from services.latency_service import record_latency
 
+# Shared language style instruction injected into every question-generation prompt.
+_QUESTION_LANGUAGE_RULE = (
+    "LANGUAGE STYLE: Technical terms are fine, but write each sentence in plain, "
+    "simple English. Use short, direct sentences. Avoid complex grammar like nested "
+    "clauses or academic phrasing. The question must be easy to read even if the "
+    "topic is advanced.\n"
+    "DIFFICULTY GUIDE:\n"
+    "  easy   = basic definition or identification (What is X? What does X do? "
+    "Name the types of X.)\n"
+    "  medium = practical usage or comparison (How do you use X? When would you "
+    "choose X over Y? How does X work internally?)\n"
+    "  hard   = system design, debugging, optimization, or trade-off scenario "
+    "(Design a system using X. Debug this problem. What are the trade-offs of X vs Y?)\n"
+)
+
 settings = get_settings()
 
 client = genai.Client(api_key=settings.GEMINI_API_KEY)
@@ -443,19 +458,21 @@ async def generate_interview_question(
         context += "\nGenerate a follow-up question based on this answer to probe deeper."
 
     prompt_template = PromptTemplate.from_template(
-        """{context}
+        """{language_rule}
+{context}
 
 Generate ONE interview question for this candidate. The question should:
 1. Be relevant to the role and candidate's skills
 1a. Ask ONLY from the provided Candidate Skill Focus Areas. Do not introduce technologies/skills outside that list.
-2. Match the {difficulty} difficulty level
+2. Match the {difficulty} difficulty level (see DIFFICULTY GUIDE above)
 3. Be clear and specific
 4. Test practical knowledge
 5. If a skill is a cluster label like "Deep Learning (CNN, LSTM)", pick one member skill from that cluster and ask a concrete question on it
 6. Rotate topics to avoid repeatedly asking from the same cluster
-7. If Current Stage is "foundation": ask only core/fundamental basics
-8. If Current Stage is "deep": DO NOT ask basic definition/foundation questions; ask applied, scenario-based, debugging, optimization, or trade-off questions only
-9. Treat Foundation Question Limit as a strict cap: once foundation stage is done, never return to foundation-style prompts
+7. If Current Stage is "foundation": ask only core/fundamental basics (easy-level definition questions)
+8. If Current Stage is "applied": ask practical usage or comparison questions (medium-level)
+9. If Current Stage is "deep": ask applied scenario, debugging, optimization, or trade-off questions only (hard-level)
+10. Once the foundation stage is done, never return to basic definition questions
 
 Return ONLY a JSON object with:
 - "question": the interview question text
@@ -464,7 +481,7 @@ Return ONLY a JSON object with:
 
 Return ONLY valid JSON, no markdown formatting."""
     )
-    prompt = prompt_template.format(context=context, difficulty=difficulty)
+    prompt = prompt_template.format(context=context, difficulty=difficulty, language_rule=_QUESTION_LANGUAGE_RULE)
 
     try:
         result = _extract_json_object(await call_gemini(prompt))
@@ -494,8 +511,18 @@ async def generate_interview_question_batch(
     plan = []
     for i in range(count):
         qn = start_question_number + i
-        difficulty = "easy" if qn <= foundation_limit else ("medium" if qn <= foundation_limit + 3 else "hard")
-        stage = "foundation" if qn <= foundation_limit else "deep"
+        # Progressive ramp: easy warmup → medium applied → hard deep
+        if qn <= foundation_limit:
+            difficulty = "easy"
+            stage = "foundation"
+        else:
+            relative = qn - foundation_limit
+            if relative <= 4:
+                difficulty = "medium"
+                stage = "applied"
+            else:
+                difficulty = "hard"
+                stage = "deep"
         plan.append({"question_number": qn, "difficulty": difficulty, "stage": stage})
 
     context = (
@@ -511,7 +538,8 @@ async def generate_interview_question_batch(
             context += f"{i}. {q}\n"
 
     prompt_template = PromptTemplate.from_template(
-        """{context}
+        """{language_rule}
+{context}
 
 Generate exactly {count} interview questions as a JSON array where each item follows the corresponding Question Plan entry.
 
@@ -519,10 +547,11 @@ Rules:
 1. Questions must be relevant to the role and listed skills.
 1a. Ask ONLY from the provided Candidate Skill Focus Areas. Do not introduce skills outside this list.
 2. Do not repeat or rephrase previous questions.
-3. If stage is "foundation": ask only core fundamentals.
-4. If stage is "deep": ask applied/scenario/debugging/trade-off questions only.
-5. Rotate topics across skills to avoid repetitive focus.
-6. If a skill is a cluster label like "Deep Learning (CNN, LSTM)", ask about one concrete member skill.
+3. If stage is "foundation": ask only basic definition or identification questions (easy-level).
+4. If stage is "applied": ask practical usage or comparison questions (medium-level).
+5. If stage is "deep": ask scenario, debugging, optimization, or trade-off questions (hard-level).
+6. Rotate topics across skills to avoid repetitive focus.
+7. If a skill is a cluster label like "Deep Learning (CNN, LSTM)", ask about one concrete member skill.
 
 Return ONLY valid JSON array with objects of shape:
 - "question": string
@@ -531,7 +560,7 @@ Return ONLY valid JSON array with objects of shape:
 
 Return ONLY JSON, no markdown."""
     )
-    prompt = prompt_template.format(context=context, count=count)
+    prompt = prompt_template.format(context=context, count=count, language_rule=_QUESTION_LANGUAGE_RULE)
 
     try:
         result = _extract_json_array((await call_gemini(prompt)).strip())

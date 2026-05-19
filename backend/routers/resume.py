@@ -21,6 +21,12 @@ async def upload_resume(
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ]
 
+    if file.content_type not in allowed_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{file.content_type}'. Allowed: PDF, DOC, DOCX, TXT.",
+        )
+
     content = await file.read()
     if len(content) > 5 * 1024 * 1024:  # 5MB limit
         raise HTTPException(status_code=400, detail="File too large. Maximum 5MB.")

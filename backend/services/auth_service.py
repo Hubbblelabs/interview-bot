@@ -3,6 +3,7 @@ from database import get_db
 from models.collections import USERS
 from utils.helpers import utc_now, str_objectid
 from auth.jwt import create_access_token
+from config import get_settings
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -16,8 +17,9 @@ async def signup_user(name: str, email: str, password: str, role: str = None) ->
     if existing:
         raise ValueError("User with this email already exists")
 
-    # Enforce role logic
-    determined_role = "admin" if email.endswith("@admin.com") else "student"
+    # Enforce role logic — admin domain is configurable via ADMIN_EMAIL_DOMAIN env var.
+    admin_domain = get_settings().ADMIN_EMAIL_DOMAIN
+    determined_role = "admin" if email.endswith(admin_domain) else "student"
 
     hashed_password = pwd_context.hash(password)
     user_doc = {

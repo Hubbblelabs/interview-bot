@@ -19,11 +19,20 @@ class InterviewGraphState(TypedDict, total=False):
     question_data: Dict[str, Any]
 
 
-FOUNDATION_QUESTION_LIMIT = 0
+FOUNDATION_QUESTION_LIMIT = 3
 
 
 def _difficulty_for_question_number(question_number: int, foundation_limit: int = FOUNDATION_QUESTION_LIMIT) -> str:
-    if question_number <= 5:
+    """Return difficulty for a given question number.
+
+    Q1-foundation_limit : easy   (warmup/definition questions)
+    Next 4 questions    : medium (practical/applied questions)
+    Remaining questions : hard   (scenario/debug/trade-off questions)
+    """
+    if question_number <= foundation_limit:
+        return "easy"
+    relative = question_number - foundation_limit
+    if relative <= 4:
         return "medium"
     return "hard"
 
@@ -42,9 +51,15 @@ async def _set_next_difficulty(state: InterviewGraphState) -> InterviewGraphStat
     question_count = int(state.get("question_count", 0))
     # We are generating the next question, so use question_count + 1.
     next_question_number = question_count + 1
-    stage = "foundation" if next_question_number <= FOUNDATION_QUESTION_LIMIT else "deep"
+    difficulty = _difficulty_for_question_number(next_question_number)
+    if next_question_number <= FOUNDATION_QUESTION_LIMIT:
+        stage = "foundation"
+    elif difficulty == "medium":
+        stage = "applied"
+    else:
+        stage = "deep"
     return {
-        "next_difficulty": _difficulty_for_question_number(next_question_number),
+        "next_difficulty": difficulty,
         "question_stage": stage,
     }
 

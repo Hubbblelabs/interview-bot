@@ -34,8 +34,15 @@ class Settings(BaseSettings):
     # File Storage
     UPLOAD_DIR: str = "./uploads"
 
-    # Frontend
-    NEXT_PUBLIC_API_URL: str = "http://localhost:3000"
+    # Frontend / CORS
+    # Comma-separated list of allowed origins, or "*" to allow all.
+    # In production set this to the exact frontend URL, e.g. "https://app.example.com".
+    CORS_ALLOWED_ORIGINS: str = "*"
+
+    # Auth — role assignment
+    # Only emails ending with this domain are granted the admin role on signup.
+    # Override via env var to lock down or open up access.
+    ADMIN_EMAIL_DOMAIN: str = "@admin.com"
 
     class Config:
         env_file = ".env"
@@ -45,18 +52,22 @@ class Settings(BaseSettings):
     @classmethod
     def validate_mongo_uri(cls, value: str) -> str:
         v = (value or "").strip().lower()
-        if "localhost" in v or "127.0.0.1" in v:
-            raise ValueError("MONGO_URI must point to MongoDB Atlas, not localhost")
-        if not v.startswith("mongodb+srv://"):
-            raise ValueError("MONGO_URI must use mongodb+srv:// for cloud deployment")
+        is_dev = os.getenv("APP_ENV", "production").lower() != "production"
+        if not is_dev:
+            if "localhost" in v or "127.0.0.1" in v:
+                raise ValueError("MONGO_URI must point to MongoDB Atlas, not localhost")
+            if not v.startswith("mongodb+srv://"):
+                raise ValueError("MONGO_URI must use mongodb+srv:// for cloud deployment")
         return value
 
     @field_validator("REDIS_URL")
     @classmethod
     def validate_redis_url(cls, value: str) -> str:
         v = (value or "").strip().lower()
-        if "localhost" in v or "127.0.0.1" in v:
-            raise ValueError("REDIS_URL must point to a cloud Redis instance, not localhost")
+        is_dev = os.getenv("APP_ENV", "production").lower() != "production"
+        if not is_dev:
+            if "localhost" in v or "127.0.0.1" in v:
+                raise ValueError("REDIS_URL must point to a cloud Redis instance, not localhost")
         if not (v.startswith("redis://") or v.startswith("rediss://")):
             raise ValueError("REDIS_URL must start with redis:// or rediss://")
         return value

@@ -75,7 +75,10 @@ let bootstrapPrefetchDone = false;
 const BACKEND_TTS_TIMEOUT_MS = 90000;
 const BACKEND_CACHE_LIMIT = 40;
 const BACKEND_TTS_RETRIES = 3;
-const ASSISTANT_TTS_SOFT_TIMEOUT_MS = 12000;
+// Raised from 12 s to 75 s — XTTS synthesis can take 30-40 s on CPU.
+// A timeout shorter than synthesis time causes browser TTS fallback to start
+// while the backend audio is still being prepared, which leads to dual-audio.
+const ASSISTANT_TTS_SOFT_TIMEOUT_MS = 75000;
 const SPEECH_HEALTH_TTL_MS = 5 * 60 * 1000;
 const SPEECH_WARMUP_TTL_MS = 15 * 60 * 1000;
 const SILENT_WAV_DATA_URI =
@@ -519,6 +522,7 @@ export const speak = (text: string, onEnd?: () => void, options?: SpeakOptions) 
             if (requestId !== speakRequestId || !currentAudio) return;
             await currentAudio.play();
           } catch {
+            if (requestId !== speakRequestId) return;
             if (shouldUseBrowserFallback(options)) {
               await speakWithBrowserFallback(content, requestId, onEnd, options);
               return;
@@ -532,10 +536,17 @@ export const speak = (text: string, onEnd?: () => void, options?: SpeakOptions) 
         await currentAudio.play();
       } catch {
         await unlockSpeechPlayback();
+        // currentAudio may have been nulled by stopSpeaking() during the await above.
+        if (!currentAudio || requestId !== speakRequestId) return;
         await currentAudio.play();
       }
     } catch {
       // Network/model issue: fallback to browser speech to keep interview flow stable.
+      // Guard against stale requests — a new speak() call may have superseded this one.
+      if (requestId !== speakRequestId) {
+        if (onEnd) onEnd();
+        return;
+      }
       if (shouldUseBrowserFallback(options)) {
         await speakWithBrowserFallback(content, requestId, onEnd, options);
       } else if (onEnd) {

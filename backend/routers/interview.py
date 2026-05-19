@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from auth.jwt import get_current_user
 from schemas.interview import (
     StartInterviewRequest,
@@ -19,22 +21,25 @@ from services.evaluation_service import generate_report
 from services.latency_service import get_latency_metrics, reset_latency_metrics
 
 router = APIRouter()
+limiter = Limiter(key_func=get_remote_address)
 
 
 @router.post("/start")
+@limiter.limit("10/minute")
 async def start_interview_endpoint(
-    request: StartInterviewRequest,
+    request: Request,
+    body: StartInterviewRequest,
     current_user: dict = Depends(get_current_user),
 ):
     """Start a new interview session."""
     try:
         result = await start_interview(
             user_id=current_user["user_id"],
-            role_id=request.role_id,
-            custom_role=request.custom_role,
-            interview_type=request.interview_type,
-            topic_id=request.topic_id,
-            job_description_id=request.job_description_id,
+            role_id=body.role_id,
+            custom_role=body.custom_role,
+            interview_type=body.interview_type,
+            topic_id=body.topic_id,
+            job_description_id=body.job_description_id,
         )
         return result
     except ValueError as e:
@@ -44,19 +49,21 @@ async def start_interview_endpoint(
 
 
 @router.post("/start_interview")
+@limiter.limit("10/minute")
 async def start_interview_compat_endpoint(
-    request: StartInterviewRequest,
+    request: Request,
+    body: StartInterviewRequest,
     current_user: dict = Depends(get_current_user),
 ):
     """Compatibility endpoint aligned with alternate API naming."""
     try:
         result = await start_interview(
             user_id=current_user["user_id"],
-            role_id=request.role_id,
-            custom_role=request.custom_role,
-            interview_type=request.interview_type,
-            topic_id=request.topic_id,
-            job_description_id=request.job_description_id,
+            role_id=body.role_id,
+            custom_role=body.custom_role,
+            interview_type=body.interview_type,
+            topic_id=body.topic_id,
+            job_description_id=body.job_description_id,
         )
         return result
     except ValueError as e:
@@ -86,16 +93,18 @@ async def verify_resume_job_description_endpoint(
 
 
 @router.post("/answer")
+@limiter.limit("30/minute")
 async def submit_answer_endpoint(
-    request: SubmitAnswerRequest,
+    request: Request,
+    body: SubmitAnswerRequest,
     current_user: dict = Depends(get_current_user),
 ):
     """Submit an answer and get next question."""
     try:
         result = await submit_answer(
-            session_id=request.session_id,
-            question_id=request.question_id,
-            answer=request.answer,
+            session_id=body.session_id,
+            question_id=body.question_id,
+            answer=body.answer,
         )
         return result
     except ValueError as e:
@@ -105,16 +114,18 @@ async def submit_answer_endpoint(
 
 
 @router.post("/submit_answer")
+@limiter.limit("30/minute")
 async def submit_answer_compat_endpoint(
-    request: SubmitAnswerRequest,
+    request: Request,
+    body: SubmitAnswerRequest,
     current_user: dict = Depends(get_current_user),
 ):
     """Compatibility endpoint aligned with alternate API naming."""
     try:
         result = await submit_answer(
-            session_id=request.session_id,
-            question_id=request.question_id,
-            answer=request.answer,
+            session_id=body.session_id,
+            question_id=body.question_id,
+            answer=body.answer,
         )
         return result
     except ValueError as e:
