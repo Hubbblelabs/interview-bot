@@ -413,6 +413,33 @@ async def _get_recent_user_questions(db, user_id: str, limit: int = 40) -> list[
     return recent
 
 
+_INTRO_TEMPLATES_GENERIC = [
+    "Introduce yourself and explain how your background aligns with {role_phrase}.",
+    "Walk me through your resume and tell me what makes you a good fit for {role_phrase}.",
+    "Tell me about yourself — your key skills, notable projects, and why you are interested in {role_phrase}.",
+    "Give a brief overview of your professional journey and how it has prepared you for {role_phrase}.",
+    "Describe your most relevant experience and how it connects to {role_phrase}.",
+    "What led you to apply for {role_phrase}, and how does your background support that decision?",
+    "Summarize your technical background and explain how it positions you for {role_phrase}.",
+    "Tell me about a project or achievement that best demonstrates your readiness for {role_phrase}.",
+    "How would you describe your technical skill set as it relates to {role_phrase}?",
+    "Start by telling me about your strongest area of expertise and how it applies to {role_phrase}.",
+]
+
+_INTRO_TEMPLATES_WITH_JD = [
+    "Introduce yourself and explain how your background aligns with {role_phrase} in {title_phrase}.",
+    "Walk me through your resume and tell me why you are a strong fit for {role_phrase} at {company_context}.",
+    "Tell me about yourself and what excites you about this {role_phrase} opportunity.",
+    "Give a brief overview of your experience and how it prepares you for {role_phrase}.",
+    "Describe the most relevant project or skill that makes you a good candidate for {role_phrase}.",
+    "What interests you most about this {role_phrase} position, and how does your background align with it?",
+    "Summarize your technical background and explain why you feel ready for {role_phrase} at {company_context}.",
+    "Tell me about your most impactful work so far and how it relates to the requirements of {role_phrase}.",
+    "Walk me through your experience — especially any work that directly maps to what {company_context} is looking for.",
+    "How has your journey prepared you specifically for the responsibilities of {role_phrase}?",
+]
+
+
 def _build_resume_intro_question(role_title: str, jd_title: str) -> str:
     role = (role_title or "this role").strip()
     title = (jd_title or "").strip()
@@ -441,13 +468,43 @@ def _build_resume_intro_question(role_title: str, jd_title: str) -> str:
     }
 
     if is_generic_title:
-        return f"Introduce yourself and explain how your background aligns with {role_phrase}."
+        template = random.choice(_INTRO_TEMPLATES_GENERIC)
+        return template.format(role_phrase=role_phrase)
 
     title_phrase = title if title.lower().startswith(("the ", "an ", "a ")) else f"the {title}"
-    return (
-        f"Introduce yourself and explain how your background aligns with {role_phrase} "
-        f"in {title_phrase} job description."
+    company_context = title
+    template = random.choice(_INTRO_TEMPLATES_WITH_JD)
+    return template.format(
+        role_phrase=role_phrase,
+        title_phrase=title_phrase,
+        company_context=company_context,
     )
+
+
+def _infer_experience_level(resume_summary: str, jd_description: str) -> str:
+    """Infer candidate experience level from resume summary and JD text.
+
+    Returns 'fresher', 'mid', or 'senior'.
+    """
+    text = f"{resume_summary} {jd_description}".lower()
+
+    senior_signals = [
+        "senior", "lead ", "principal", "staff engineer", "10+ year", "8+ year",
+        "9+ year", "7+ year", "architect", "head of", "director",
+    ]
+    fresher_signals = [
+        "fresher", "fresh graduate", "recent graduate", "entry level", "entry-level",
+        "0 year", "0-1 year", "0 to 1 year", "no experience", "new graduate",
+        "just graduated", "college graduate", "university graduate",
+    ]
+
+    for signal in senior_signals:
+        if signal in text:
+            return "senior"
+    for signal in fresher_signals:
+        if signal in text:
+            return "fresher"
+    return "mid"
 
 
 def _build_resume_resilient_followup_question(
@@ -643,6 +700,8 @@ async def _seed_resume_questions_task(session_id: str) -> None:
                 jd_required_skills=_safe_json_list(session.get("jd_required_skills", "[]")),
                 excluded_questions=excluded_questions,
                 count=needed,
+                company_name=session.get("company_name", ""),
+                experience_level=session.get("experience_level", "mid"),
             )
 
             appended = 0
@@ -1040,8 +1099,11 @@ async def _fetch_question_bank_batch(
     return selected
 
 
-def _strict_followup_difficulty(answered_count: int) -> str:
-    # After first DB set (Q1-5), follow-ups should feel like real interview pressure.
+def _strict_followup_difficulty(answered_count: int, experience_level: str = "mid") -> str:
+    if experience_level == "fresher":
+        # Freshers: start easy, ramp to medium only after several answers
+        return "medium" if answered_count >= 5 else "easy"
+    # mid/senior: original ramp
     return "hard" if answered_count >= 10 else "medium"
 
 
@@ -1101,7 +1163,9 @@ async def _generate_mixed_followup_batch(
     skills = _safe_json_list(session.get("skills", "[]"))
     jd_required_skills = _safe_json_list(session.get("jd_required_skills", "[]"))
     resume_source_mode = (session.get("resume_source_mode") or "db").strip().lower()
-    current_difficulty = _strict_followup_difficulty(answered_count)
+    experience_level = (session.get("experience_level") or "mid").strip().lower()
+    company_name = session.get("company_name", "")
+    current_difficulty = _strict_followup_difficulty(answered_count, experience_level)
 
     from utils.gemini import generate_followup_question_batch_from_qa
 
@@ -1116,6 +1180,8 @@ async def _generate_mixed_followup_batch(
             previous_questions=previous_questions,
             count=target,
             difficulty=current_difficulty,
+            experience_level=experience_level,
+            company_name=company_name,
         )
         gemini_calls = 1 if target > 0 else 0
 
@@ -1183,6 +1249,8 @@ async def _generate_mixed_followup_batch(
             previous_questions=previous_questions,
             count=ai_target,
             difficulty=current_difficulty,
+            experience_level=experience_level,
+            company_name=company_name,
         )
         gemini_calls += 1
         for item in generated_ai:
@@ -1226,6 +1294,8 @@ async def _generate_mixed_followup_batch(
                 previous_questions=list(excluded_lower),
                 count=refill,
                 difficulty=current_difficulty,
+                experience_level=experience_level,
+                company_name=company_name,
             )
             gemini_calls += 1
         for item in refill_ai:
@@ -1630,7 +1700,9 @@ async def start_interview(
         "jd_required_skills": json.dumps(jd_required_skills),
         "job_description_title": selected_jd.get("title", ""),
         "job_description_text": selected_jd.get("description", ""),
+        "company_name": selected_jd.get("company") or "",
         "resume_summary": resume_summary,
+        "experience_level": _infer_experience_level(resume_summary, selected_jd.get("description", "")),
         "metrics_gemini_calls": 0,
         "metrics_gemini_questions": 0,
         "metrics_bank_questions": 1,

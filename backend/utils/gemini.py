@@ -744,6 +744,8 @@ async def generate_followup_question_batch_from_qa(
     previous_questions: list,
     count: int,
     difficulty: str = "medium",
+    experience_level: str = "mid",
+    company_name: str = "",
 ) -> list:
     """Generate follow-up questions from interview Q&A context in a single Gemini call."""
     count = max(0, int(count or 0))
@@ -765,7 +767,31 @@ async def generate_followup_question_batch_from_qa(
         "answered_qa": compact_qa,
         "loose_qa": _collect_loose_qa(qa_pairs),
         "previous_questions": previous_questions,
+        "company_name": company_name or "",
+        "experience_level": experience_level or "mid",
     }
+
+    level_instruction = {
+        "fresher": (
+            "Candidate level is FRESHER. Ask foundational questions only: "
+            "definitions, basic usage, simple scenarios a student or new graduate could answer. "
+            "Avoid system design, production trade-offs, and advanced optimization."
+        ),
+        "senior": (
+            "Candidate level is SENIOR. Ask deep technical questions: "
+            "architecture decisions, production failure analysis, scalability trade-offs."
+        ),
+    }.get(
+        experience_level,
+        "Candidate level is MID-LEVEL. Balance practical implementation with some conceptual depth.",
+    )
+
+    company_instruction = (
+        f'The candidate is applying to "{company_name}". '
+        f"Tailor questions to reflect the values and technical depth {company_name} is known for in interviews."
+        if company_name
+        else ""
+    )
 
     prompt_template = PromptTemplate.from_template(
         """You are generating strict, concept-focused technical interview follow-up questions.
@@ -773,15 +799,18 @@ async def generate_followup_question_batch_from_qa(
 Input JSON:
 {payload}
 
+{level_instruction}
+{company_instruction}
+
 Instructions:
 1. Generate exactly {count} follow-up questions using answered_qa context.
-    2. Questions must continue naturally from candidate's previous answers.
-    2a. Ask ONLY from the provided skills list. Do not introduce new unrelated skills/tools.
+2. Questions must continue naturally from candidate's previous answers.
+2a. Ask ONLY from the provided skills list. Do not introduce new unrelated skills/tools.
 3. Do not repeat or paraphrase any question in previous_questions.
-    4. Prioritize loose_qa first: if any answer is vague/short/uncertain, ask a direct follow-up that probes missing concept depth.
-    5. Focus on concept validation (why, how, trade-offs, failure modes), not memorized definitions.
-    6. Keep questions practical and role-relevant.
-    7. Use difficulty {difficulty}. Do not output easy/basic-level questions.
+4. Prioritize loose_qa first: if any answer is vague/short/uncertain, ask a direct follow-up that probes missing concept depth.
+5. Focus on concept validation (why, how, trade-offs, failure modes), not memorized definitions.
+6. Keep questions practical and role-relevant.
+7. Use difficulty {difficulty}. Strictly respect the candidate level instruction above.
 
 Return ONLY valid JSON array with objects:
 - "question": string
@@ -794,6 +823,8 @@ No markdown, no extra text."""
         payload=json.dumps(payload, ensure_ascii=True),
         count=count,
         difficulty=difficulty,
+        level_instruction=level_instruction,
+        company_instruction=company_instruction,
     )
 
     try:

@@ -92,6 +92,8 @@ async def generate_resume_seed_questions(
     jd_required_skills: list[str],
     excluded_questions: list[str],
     count: int = 2,
+    company_name: str = "",
+    experience_level: str = "mid",
 ) -> list[dict]:
     count = max(1, int(count or 2))
 
@@ -104,22 +106,54 @@ async def generate_resume_seed_questions(
         "jd_required_skills": jd_required_skills,
         "excluded_questions": excluded_questions[-25:] if excluded_questions else [],
         "count": count,
+        "company_name": company_name or "",
+        "experience_level": experience_level or "mid",
     }
+
+    company_guidance = ""
+    if company_name:
+        company_guidance = f"""
+Company context: The candidate is applying to "{company_name}". Tailor questions to match the interview style and technical depth that {company_name} is known to prefer. For well-known companies (e.g. Google, Amazon, Microsoft, Infosys, TCS, Wipro, etc.) use knowledge of their typical interview patterns and values.
+"""
+
+    level_guidance = {
+        "fresher": (
+            "Candidate level: FRESHER (0–1 year experience or fresh graduate). "
+            "Ask only foundational questions: definitions, basic usage, simple project-level scenarios. "
+            "Avoid system design, production trade-offs, or advanced optimization. "
+            "Use easy difficulty. The goal is to assess conceptual awareness, not deep expertise."
+        ),
+        "senior": (
+            "Candidate level: SENIOR (5+ years). "
+            "Ask deep technical questions: architecture, trade-offs, production failures, scalability. "
+            "Use hard difficulty."
+        ),
+    }.get(
+        experience_level,
+        (
+            "Candidate level: MID-LEVEL (2–4 years). "
+            "Balance practical implementation questions with some conceptual depth. "
+            "Use easy to medium difficulty."
+        ),
+    )
 
     prompt = f"""{_QUESTION_LANGUAGE_RULE}
 Generate exactly {count} resume interview questions.
+{company_guidance}
+{level_guidance}
 
 Input JSON:
 {json.dumps(payload, ensure_ascii=True)}
 
 Rules:
 1) Questions must be strictly from JD required skills and role context.
-2) Use resume context for relevance.
+2) Use resume context for relevance — reference the candidate's actual background where useful.
 3) Do not repeat or paraphrase excluded_questions.
 4) Keep questions concise and practical.
 5) Make the set diverse: use different styles (scenario, debugging, trade-off, implementation, testing).
 6) Do not prefix with numbering like "Question 1:".
 7) Avoid generic repeats like "Explain your hands-on experience" for every question.
+8) Strictly respect the candidate level guidance above when choosing difficulty.
 
 Return ONLY valid JSON array with objects:
 - question (string)
