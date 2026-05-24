@@ -46,10 +46,29 @@ class Settings(BaseSettings):
     # In production set this to the exact frontend URL, e.g. "https://app.example.com".
     CORS_ALLOWED_ORIGINS: str = "*"
 
+    # Frontend URL — used in password reset email links.
+    FRONTEND_URL: str = "http://localhost:3000"
+
     # Auth — role assignment
     # Only emails ending with this domain are granted the admin role on signup.
     # Override via env var to lock down or open up access.
     ADMIN_EMAIL_DOMAIN: str = "@admin.com"
+
+    # Email / SMTP
+    # Leave SMTP_HOST empty to run without email (OTP will be logged to console instead).
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_EMAIL: str = "noreply@example.com"
+    SMTP_FROM_NAME: str = "Interview Bot"
+    # True = STARTTLS (port 587, Gmail default); False = plain / SSL-wrapped
+    SMTP_USE_TLS: bool = True
+
+    # OTP / verification
+    # How long (seconds) before an OTP or password-reset token expires.
+    OTP_TTL_SECONDS: int = 600          # 10 minutes
+    RESET_TOKEN_TTL_SECONDS: int = 1800 # 30 minutes
 
     class Config:
         env_file = ".env"

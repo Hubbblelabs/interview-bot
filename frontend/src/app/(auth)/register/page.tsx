@@ -29,8 +29,8 @@ export default function RegisterPage() {
 
     try {
       await api.post("/auth/signup", { email, password, name });
-      toast.success("Account Created!", { description: "Please sign in with your new credentials." });
-      router.push("/login?registered=true");
+      toast.success("Account Created!", { description: "Check your email for a verification code." });
+      router.push(`/verify-email?email=${encodeURIComponent(email)}`);
     } catch (err: any) {
       toast.error("Registration Failed", {
         description: err.response?.data?.detail || "Failed to create account. Please try again.",

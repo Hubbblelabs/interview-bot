@@ -1,14 +1,22 @@
 from fastapi import APIRouter, HTTPException, Depends
 from auth.jwt import get_current_user, create_access_token
-from schemas.auth import SignupRequest, LoginRequest, AuthResponse
-from services.auth_service import signup_user, login_user
+from schemas.auth import (
+    SignupRequest, LoginRequest, AuthResponse,
+    VerifyEmailRequest, ResendOtpRequest,
+    ForgotPasswordRequest, ResetPasswordRequest,
+)
+from services.auth_service import (
+    signup_user, login_user,
+    verify_email_otp, resend_otp,
+    forgot_password, reset_password,
+)
 
 router = APIRouter()
 
 
-@router.post("/signup", response_model=AuthResponse)
+@router.post("/signup")
 async def signup(request: SignupRequest):
-    """Register a new user."""
+    """Register a new user. An OTP is sent to the provided email for verification."""
     try:
         result = await signup_user(
             name=request.name,
@@ -42,3 +50,36 @@ async def refresh_token(current_user: dict = Depends(get_current_user)):
         "name": current_user["name"],
     })
     return {"access_token": token, "token_type": "bearer"}
+
+
+@router.post("/verify-email")
+async def verify_email(request: VerifyEmailRequest):
+    """Verify an account using the 6-digit OTP sent to the user's email."""
+    try:
+        return await verify_email_otp(request.email, request.otp)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/resend-otp")
+async def resend_verification_otp(request: ResendOtpRequest):
+    """Resend the email verification OTP (60-second cooldown)."""
+    try:
+        return await resend_otp(request.email)
+    except ValueError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+
+
+@router.post("/forgot-password")
+async def forgot_password_endpoint(request: ForgotPasswordRequest):
+    """Send a password-reset link to the given email address."""
+    return await forgot_password(request.email)
+
+
+@router.post("/reset-password")
+async def reset_password_endpoint(request: ResetPasswordRequest):
+    """Reset the password using the token from the reset email."""
+    try:
+        return await reset_password(request.token, request.new_password)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

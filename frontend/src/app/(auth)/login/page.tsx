@@ -98,7 +98,7 @@ export default function LoginPage() {
               <div className="space-y-1.5" style={{ animation: "fadeInSoft 0.4s ease-out 0.12s both" }}>
                 <div className="flex items-center justify-between ml-0.5">
                   <label className="text-[10px] font-black text-primary/50 uppercase tracking-[0.2em]">Password</label>
-                  <Link href="#" className="text-[10px] font-black text-primary hover:underline tracking-wider">FORGOT?</Link>
+                  <Link href="/forgot-password" className="text-[10px] font-black text-primary hover:underline tracking-wider">FORGOT?</Link>
                 </div>
                 <div className="relative">
                   <input
