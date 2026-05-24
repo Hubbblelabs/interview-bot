@@ -1,6 +1,6 @@
 import axios from "axios";
 import type { AxiosRequestConfig } from "axios";
-import { getToken, logout } from "./auth";
+import { getToken, setToken, logout } from "./auth";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -11,7 +11,7 @@ const api = axios.create({
   },
 });
 
-type DedupeGetConfig = AxiosRequestConfig & { skipDedupe?: boolean };
+type DedupeGetConfig = AxiosRequestConfig & { skipDedupe?: boolean; _retry?: boolean };
 
 const inFlightGetRequests = new Map<string, Promise<unknown>>();
 
@@ -65,20 +65,79 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// Response interceptor to handle 401 Unauthorized globally
+// --- JWT silent refresh ---
+let isRefreshing = false;
+let refreshSubscribers: ((token: string) => void)[] = [];
+
+const onTokenRefreshed = (token: string) => {
+  refreshSubscribers.forEach((cb) => cb(token));
+  refreshSubscribers = [];
+};
+
+// Response interceptor: on 401, try a silent token refresh before logging out
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      // Avoid logout loop if already on login/register pages
-      if (
-        typeof window !== "undefined" &&
-        !window.location.pathname.includes("/login") &&
-        !window.location.pathname.includes("/register")
-      ) {
+  async (error) => {
+    const originalRequest = error.config as DedupeGetConfig & { _retry?: boolean };
+
+    const is401 = error.response?.status === 401;
+    const isAuthEndpoint =
+      originalRequest?.url?.includes("/auth/login") ||
+      originalRequest?.url?.includes("/auth/signup") ||
+      originalRequest?.url?.includes("/auth/refresh");
+
+    if (is401 && !originalRequest._retry && !isAuthEndpoint) {
+      // If another request is already refreshing, queue this one
+      if (isRefreshing) {
+        return new Promise((resolve, reject) => {
+          refreshSubscribers.push((token: string) => {
+            originalRequest.headers = originalRequest.headers ?? {};
+            originalRequest.headers.Authorization = `Bearer ${token}`;
+            resolve(api(originalRequest));
+          });
+          // If refresh ultimately fails, reject queued requests too
+          setTimeout(() => reject(error), 10000);
+        });
+      }
+
+      originalRequest._retry = true;
+      isRefreshing = true;
+
+      const currentToken = getToken();
+      if (!currentToken) {
+        isRefreshing = false;
         logout();
+        return Promise.reject(error);
+      }
+
+      try {
+        // Use a raw axios call (not api) to avoid interceptor loops
+        const { data } = await axios.post(
+          `${API_URL}/auth/refresh`,
+          {},
+          { headers: { Authorization: `Bearer ${currentToken}` } }
+        );
+        const newToken: string = data.access_token;
+        setToken(newToken);
+        isRefreshing = false;
+        onTokenRefreshed(newToken);
+        originalRequest.headers = originalRequest.headers ?? {};
+        originalRequest.headers.Authorization = `Bearer ${newToken}`;
+        return api(originalRequest);
+      } catch {
+        isRefreshing = false;
+        refreshSubscribers = [];
+        if (
+          typeof window !== "undefined" &&
+          !window.location.pathname.includes("/login") &&
+          !window.location.pathname.includes("/register")
+        ) {
+          logout();
+        }
+        return Promise.reject(error);
       }
     }
+
     return Promise.reject(error);
   }
 );

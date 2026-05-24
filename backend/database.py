@@ -16,8 +16,17 @@ async def connect_db():
     """Initialize MongoDB and Redis connections."""
     global mongo_client, db, redis_client
 
-    # MongoDB Atlas
-    mongo_client = AsyncIOMotorClient(settings.MONGO_URI)
+    # MongoDB Atlas — explicit pool for 30 concurrent users.
+    # maxPoolSize=50 allows up to 50 simultaneous DB operations.
+    # minPoolSize=5 keeps warm connections ready at startup.
+    mongo_client = AsyncIOMotorClient(
+        settings.MONGO_URI,
+        maxPoolSize=50,
+        minPoolSize=5,
+        serverSelectionTimeoutMS=5000,
+        connectTimeoutMS=10000,
+        socketTimeoutMS=30000,
+    )
     db = mongo_client[settings.MONGO_DB_NAME]
 
     # Create indexes
@@ -32,10 +41,14 @@ async def connect_db():
     await db.questions.create_index("role_id")
     await db.jd_verifications.create_index([("user_id", 1), ("cache_key", 1)])
 
-    # Redis
+    # Redis — explicit connection pool (max_connections=30 covers all workers).
     redis_client = aioredis.from_url(
         settings.REDIS_URL,
         decode_responses=True,
+        max_connections=30,
+        socket_connect_timeout=5,
+        socket_timeout=10,
+        retry_on_timeout=True,
     )
 
     # Test connections

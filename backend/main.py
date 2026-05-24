@@ -1,5 +1,7 @@
 from contextlib import asynccontextmanager
 import asyncio
+import logging
+import logging.config
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -18,6 +20,19 @@ from services.stt_service import warmup_whisper_model
 
 from routers import auth, resume, profile, interview, reports, admin, speech
 
+# ── Logging setup ─────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+# Suppress noisy third-party loggers
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+logger = logging.getLogger(__name__)
+
 settings = get_settings()
 limiter = Limiter(key_func=get_remote_address)
 
@@ -29,16 +44,16 @@ async def lifespan(app: FastAPI):
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
     try:
         await asyncio.wait_for(warmup_xtts_model(), timeout=45)
-        print("XTTS warmup: ready")
+        logger.info("XTTS warmup: ready")
     except Exception as exc:
-        print(f"XTTS warmup skipped: {exc}")
+        logger.warning("XTTS warmup skipped: %s", exc)
 
     try:
         await asyncio.wait_for(warmup_whisper_model(), timeout=45)
-        print("Whisper warmup: ready")
+        logger.info("Whisper warmup: ready")
     except Exception as exc:
-        print(f"Whisper warmup skipped: {exc}")
-    print(f"🚀 Interview Bot API running in {settings.APP_ENV} mode")
+        logger.warning("Whisper warmup skipped: %s", exc)
+    logger.info("Interview Bot API running in %s mode", settings.APP_ENV)
     yield
     # Shutdown
     await close_db()

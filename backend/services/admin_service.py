@@ -573,11 +573,11 @@ async def get_admin_report_detail(session_id: str) -> dict:
     return payload
 
 
-async def list_admin_users(limit: int = 500) -> list:
+async def list_admin_users(limit: int = 500, skip: int = 0) -> list:
     """List users for admin management with lightweight activity stats."""
     db = get_db()
 
-    user_cursor = db[USERS].find({"role": "student"}, {"password": 0}).sort("created_at", -1).limit(limit)
+    user_cursor = db[USERS].find({"role": "student"}, {"password": 0}).sort("created_at", -1).skip(skip).limit(limit)
     users = await user_cursor.to_list(length=limit)
 
     interview_counts = await db[SESSIONS].aggregate([

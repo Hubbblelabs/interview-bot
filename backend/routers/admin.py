@@ -369,12 +369,13 @@ async def get_admin_report_by_session(
 
 @router.get("/users")
 async def get_admin_users(
-    limit: int = Query(500, ge=1, le=1000),
+    limit: int = Query(100, ge=1, le=500),
+    skip: int = Query(0, ge=0),
     current_user: dict = Depends(require_role("admin")),
 ):
-    """List users for admin management."""
-    items = await list_admin_users(limit=limit)
-    return {"items": items}
+    """List users for admin management. Use skip/limit for pagination."""
+    items = await list_admin_users(limit=limit, skip=skip)
+    return {"items": items, "limit": limit, "skip": skip}
 
 
 @router.get("/job-descriptions")

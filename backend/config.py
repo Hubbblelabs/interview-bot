@@ -1,8 +1,11 @@
 from pydantic_settings import BaseSettings
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from functools import lru_cache
+import logging
 import os
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 # Load .env from backend directory
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
@@ -16,6 +19,10 @@ class Settings(BaseSettings):
 
     # Gemini
     GEMINI_API_KEY: str
+    # Comma-separated list of extra Gemini API keys for round-robin load balancing.
+    # Example: GEMINI_API_KEYS=key2,key3,key4
+    # The primary GEMINI_API_KEY is always included automatically.
+    GEMINI_API_KEYS: str = ""
     GEMINI_MODEL: str = "gemini-2.5-flash"
     GEMINI_FALLBACK_MODELS: str = ""
 
@@ -71,6 +78,21 @@ class Settings(BaseSettings):
         if not (v.startswith("redis://") or v.startswith("rediss://")):
             raise ValueError("REDIS_URL must start with redis:// or rediss://")
         return value
+
+    @model_validator(mode="after")
+    def warn_insecure_defaults(self) -> "Settings":
+        is_production = self.APP_ENV.lower() == "production"
+        if is_production and self.CORS_ALLOWED_ORIGINS.strip() == "*":
+            logger.warning(
+                "SECURITY: CORS_ALLOWED_ORIGINS is set to '*' in production. "
+                "Set it to your frontend URL to restrict cross-origin access."
+            )
+        if is_production and self.ADMIN_EMAIL_DOMAIN == "@admin.com":
+            logger.warning(
+                "SECURITY: ADMIN_EMAIL_DOMAIN is still the default '@admin.com'. "
+                "Anyone can register an admin account. Set this to your institution domain."
+            )
+        return self
 
 
 @lru_cache()

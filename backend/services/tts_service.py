@@ -15,6 +15,21 @@ _AUDIO_CACHE_LOCK = asyncio.Lock()
 _SYNTHESIZE_LOCKS: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
 _TORCH_LOAD_PATCHED = False
 
+# Global semaphore: caps concurrent XTTS synthesis jobs to prevent memory/CPU
+# exhaustion under load. Configurable via TTS_MAX_CONCURRENT env var (default 4).
+_SYNTHESIS_SEMAPHORE: asyncio.Semaphore | None = None
+
+
+def _get_synthesis_semaphore() -> asyncio.Semaphore:
+    global _SYNTHESIS_SEMAPHORE
+    if _SYNTHESIS_SEMAPHORE is None:
+        try:
+            limit = max(1, int(os.getenv("TTS_MAX_CONCURRENT", "4")))
+        except Exception:
+            limit = 4
+        _SYNTHESIS_SEMAPHORE = asyncio.Semaphore(limit)
+    return _SYNTHESIS_SEMAPHORE
+
 XTTS_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
 XTTS_LANGUAGE = "en"
 XTTS_SPEED = 1.2
@@ -276,32 +291,35 @@ async def synthesize_wav(text: str, voice_gender: str = "female") -> bytes:
     if cached:
         return cached
 
-    async with _get_or_create_synthesize_lock(cache_key):
-        # Recheck cache after waiting for lock in case another request already synthesized it.
-        cached = await _get_cached_audio(cache_key)
-        if cached:
-            return cached
+    # Semaphore limits total concurrent XTTS synthesis jobs (default max 4).
+    # Cache hits and lock-waits do not consume a semaphore slot.
+    async with _get_synthesis_semaphore():
+        async with _get_or_create_synthesize_lock(cache_key):
+            # Recheck cache after waiting for lock in case another request already synthesized it.
+            cached = await _get_cached_audio(cache_key)
+            if cached:
+                return cached
 
-        speaker = _resolve_xtts_speaker(normalized_gender)
-        tts = await _get_tts_model(XTTS_MODEL)
+            speaker = _resolve_xtts_speaker(normalized_gender)
+            tts = await _get_tts_model(XTTS_MODEL)
 
-        fd, tmp_path = tempfile.mkstemp(suffix=".wav")
-        os.close(fd)
-        try:
-            def _synthesize():
-                _synthesize_xtts_to_file(tts, text=content, speaker=speaker, file_path=tmp_path)
-
+            fd, tmp_path = tempfile.mkstemp(suffix=".wav")
+            os.close(fd)
             try:
-                await asyncio.to_thread(_synthesize)
-                with open(tmp_path, "rb") as f:
-                    wav = f.read()
-                await _set_cached_audio(cache_key, wav)
-                return wav
-            except Exception:
-                # Keep speech available even if XTTS runtime has temporary issues.
-                wav = await _synthesize_fallback_wav(content, normalized_gender)
-                await _set_cached_audio(cache_key, wav)
-                return wav
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+                def _synthesize():
+                    _synthesize_xtts_to_file(tts, text=content, speaker=speaker, file_path=tmp_path)
+
+                try:
+                    await asyncio.to_thread(_synthesize)
+                    with open(tmp_path, "rb") as f:
+                        wav = f.read()
+                    await _set_cached_audio(cache_key, wav)
+                    return wav
+                except Exception:
+                    # Keep speech available even if XTTS runtime has temporary issues.
+                    wav = await _synthesize_fallback_wav(content, normalized_gender)
+                    await _set_cached_audio(cache_key, wav)
+                    return wav
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)

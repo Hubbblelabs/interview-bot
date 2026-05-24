@@ -161,7 +161,7 @@ export default function LoginPage() {
         />
         <div className="relative z-10 text-center px-12 animate-fade-in delay-500">
           <h2 className="text-white text-6xl font-black tracking-tighter leading-[0.9] mb-4">
-            Interview prep <br/>Anywhere Anytime❤️
+            Interview prep <br/>Anywhere Anytime
           </h2>
           <div className="w-20 h-1 bg-white/20 mx-auto rounded-full" />
         </div>

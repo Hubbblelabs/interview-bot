@@ -5,6 +5,8 @@ import asyncio
 import json
 import random
 import re
+import threading
+import time
 from time import perf_counter
 from langchain_core.prompts import PromptTemplate
 from services.latency_service import record_latency
@@ -26,7 +28,84 @@ _QUESTION_LANGUAGE_RULE = (
 
 settings = get_settings()
 
-client = genai.Client(api_key=settings.GEMINI_API_KEY)
+# ---------------------------------------------------------------------------
+# Multi-key Gemini pool
+# Supports N API keys for round-robin load balancing and per-key rate-limit
+# tracking. Add extra keys via GEMINI_API_KEYS=key2,key3 in .env
+# ---------------------------------------------------------------------------
+
+_KEY_POOL: list[dict] = []
+_KEY_POOL_INDEX: int = 0
+_KEY_POOL_LOCK = threading.Lock()
+
+
+def _init_key_pool() -> None:
+    """Build the key pool from GEMINI_API_KEY (primary) + GEMINI_API_KEYS (extras)."""
+    global _KEY_POOL
+    keys: list[str] = []
+
+    # Extra keys first so primary is used as last resort / first round-robin entry
+    extras = (getattr(settings, "GEMINI_API_KEYS", "") or "").strip()
+    if extras:
+        keys.extend([k.strip() for k in extras.split(",") if k.strip()])
+
+    primary = (settings.GEMINI_API_KEY or "").strip()
+    if primary and primary not in keys:
+        keys.append(primary)
+
+    _KEY_POOL = [
+        {
+            "key": k,
+            "client": genai.Client(api_key=k),
+            "call_count": 0,
+            "rate_limited_until": 0.0,  # time.monotonic() deadline
+        }
+        for k in keys
+        if k
+    ]
+
+
+def _pick_key() -> dict:
+    """Return the next available key via round-robin, skipping rate-limited keys."""
+    global _KEY_POOL_INDEX
+    if not _KEY_POOL:
+        raise RuntimeError("No Gemini API keys configured")
+
+    now = time.monotonic()
+    n = len(_KEY_POOL)
+    with _KEY_POOL_LOCK:
+        for i in range(n):
+            idx = (_KEY_POOL_INDEX + i) % n
+            entry = _KEY_POOL[idx]
+            if entry["rate_limited_until"] <= now:
+                _KEY_POOL_INDEX = (idx + 1) % n
+                entry["call_count"] += 1
+                return entry
+        # All keys temporarily rate-limited — return soonest-recovering one
+        return min(_KEY_POOL, key=lambda e: e["rate_limited_until"])
+
+
+def _mark_key_rate_limited(entry: dict, retry_seconds: float = 65.0) -> None:
+    """Mark a key as unavailable for retry_seconds (one Gemini quota window)."""
+    with _KEY_POOL_LOCK:
+        entry["rate_limited_until"] = time.monotonic() + retry_seconds
+
+
+def get_key_pool_status() -> list[dict]:
+    """Return pool health summary (for admin/debug endpoints)."""
+    now = time.monotonic()
+    return [
+        {
+            "index": i,
+            "call_count": e["call_count"],
+            "rate_limited": e["rate_limited_until"] > now,
+            "recovers_in_s": max(0.0, round(e["rate_limited_until"] - now, 1)),
+        }
+        for i, e in enumerate(_KEY_POOL)
+    ]
+
+
+_init_key_pool()
 
 
 def _extract_response_text(response) -> str:
@@ -105,10 +184,13 @@ async def call_gemini(
 
     attempts = max(1, int(max_attempts or 1))
     for attempt in range(attempts):
+        key_entry = _pick_key()
+
         for model_name in model_candidates:
             try:
-                def _invoke():
-                    return client.models.generate_content(
+                # Capture client at call-time to avoid closure issues during key rotation.
+                def _invoke(_client=key_entry["client"]):
+                    return _client.models.generate_content(
                         model=model_name,
                         contents=prompt,
                         config=config if config else None,
@@ -129,14 +211,27 @@ async def call_gemini(
                 elapsed_ms = (perf_counter() - started_at) * 1000.0
                 await record_latency("gemini_ms", elapsed_ms)
                 return response_text
+
             except Exception as exc:
                 last_error = exc
-                # Try next model candidate immediately on transient/unavailable errors.
+                message = str(exc or "").lower()
+
+                # Rate-limit / quota exhausted — mark this key and immediately
+                # rotate to the next available key before trying the next model.
+                if (
+                    "resource_exhausted" in message
+                    or "429" in message
+                    or "quota" in message
+                ):
+                    _mark_key_rate_limited(key_entry)
+                    key_entry = _pick_key()
+                    continue
+
+                # Transient service errors: try next model candidate.
                 if _is_transient_gemini_error(exc):
                     continue
 
-                # Model-not-found style errors should try the next candidate too.
-                message = str(exc or "").lower()
+                # Model-not-found: try next candidate.
                 if "not found" in message or "unsupported" in message:
                     continue
 
