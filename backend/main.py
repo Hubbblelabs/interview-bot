@@ -14,9 +14,9 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from config import get_settings
-from database import connect_db, close_db
-from services.tts_service import warmup_xtts_model
-from services.stt_service import warmup_whisper_model
+from database import connect_db, close_db, ping_services
+from services.tts_service import warmup_xtts_model, get_xtts_warmup_state
+from services.stt_service import warmup_whisper_model, get_whisper_warmup_state
 
 from routers import auth, resume, profile, interview, reports, admin, speech
 
@@ -96,7 +96,36 @@ app.include_router(speech.router, prefix="/speech", tags=["Speech"])
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "version": "1.0.0"}
+    return {"status": "ok", "version": "1.0.0"}
+
+
+@app.get("/health/services")
+async def health_services():
+    """Deep health check: probes MongoDB, Redis, TTS, and Whisper.
+    Returns HTTP 200 with status='degraded' when any dependency is unhealthy
+    so load balancers can still reach the endpoint while operators investigate.
+    """
+    db_results = await ping_services()
+
+    tts = get_xtts_warmup_state()
+    stt = get_whisper_warmup_state()
+
+    services = {
+        **db_results,
+        "tts": {
+            "status": "ok" if tts["is_warm"] else ("error" if tts["last_error"] else "warming_up"),
+            "ready": tts["is_warm"],
+            **({"detail": tts["last_error"][:120]} if tts["last_error"] else {}),
+        },
+        "stt": {
+            "status": "ok" if stt["is_warm"] else ("error" if stt["last_error"] else "warming_up"),
+            "ready": stt["is_warm"],
+            **({"detail": stt["last_error"][:120]} if stt["last_error"] else {}),
+        },
+    }
+
+    overall = "ok" if all(s.get("status") == "ok" for s in services.values()) else "degraded"
+    return {"status": overall, "version": "1.0.0", "services": services}
 
 
 @app.get("/maintenance")

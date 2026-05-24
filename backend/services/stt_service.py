@@ -10,6 +10,7 @@ _WHISPER_MODEL_CACHE = {}
 _WHISPER_MODEL_LOCK = asyncio.Lock()
 _WHISPER_RUNTIME_FORCE_CPU = False
 _WHISPER_LAST_ERROR: str | None = None
+_WHISPER_WARM = False
 
 
 def _is_cuda_runtime_error(error: Exception) -> bool:
@@ -133,11 +134,21 @@ async def _get_whisper_model():
 
 
 async def warmup_whisper_model() -> None:
+    global _WHISPER_WARM, _WHISPER_LAST_ERROR
     try:
         await _get_whisper_model()
-    except Exception:
+        _WHISPER_WARM = True
+        _WHISPER_LAST_ERROR = None
+    except Exception as exc:
+        _WHISPER_LAST_ERROR = str(exc)
         # Best-effort warmup only.
-        pass
+
+
+def get_whisper_warmup_state() -> dict:
+    return {
+        "is_warm": _WHISPER_WARM,
+        "last_error": _WHISPER_LAST_ERROR,
+    }
 
 
 async def transcribe_audio_bytes(audio_bytes: bytes, filename: str = "speech.webm", language: str = "en") -> str:

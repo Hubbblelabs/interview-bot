@@ -1,8 +1,10 @@
+import logging
 from motor.motor_asyncio import AsyncIOMotorClient
 import redis.asyncio as aioredis
 from config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 # MongoDB Atlas
 mongo_client: AsyncIOMotorClient = None
@@ -54,15 +56,15 @@ async def connect_db():
     # Test connections
     try:
         await mongo_client.admin.command("ping")
-        print("✅ Connected to MongoDB Atlas")
+        logger.info("Connected to MongoDB Atlas")
     except Exception as e:
-        print(f"❌ Failed to connect to MongoDB: {e}")
+        logger.error("Failed to connect to MongoDB: %s", e)
 
     try:
         await redis_client.ping()
-        print("✅ Connected to Redis")
+        logger.info("Connected to Redis")
     except Exception as e:
-        print(f"⚠️ Failed to connect to Redis (URL might be invalid or unreachable): {e}")
+        logger.warning("Failed to connect to Redis: %s", e)
 
 
 async def close_db():
@@ -72,7 +74,27 @@ async def close_db():
         mongo_client.close()
     if redis_client:
         await redis_client.close()
-    print("🔌 Database connections closed")
+    logger.info("Database connections closed")
+
+
+async def ping_services() -> dict:
+    """Probe MongoDB and Redis reachability. Used by /health/services."""
+    import asyncio
+    results = {}
+
+    try:
+        await asyncio.wait_for(mongo_client.admin.command("ping"), timeout=3.0)
+        results["mongodb"] = {"status": "ok"}
+    except Exception as exc:
+        results["mongodb"] = {"status": "error", "detail": str(exc)[:120]}
+
+    try:
+        await asyncio.wait_for(redis_client.ping(), timeout=3.0)
+        results["redis"] = {"status": "ok"}
+    except Exception as exc:
+        results["redis"] = {"status": "error", "detail": str(exc)[:120]}
+
+    return results
 
 
 def get_db():
