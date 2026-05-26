@@ -25,8 +25,8 @@ async def signup_user(name: str, email: str, password: str, role: str = None) ->
     if existing:
         raise ValueError("User with this email already exists")
 
-    admin_domain = settings.ADMIN_EMAIL_DOMAIN
-    determined_role = "admin" if email.endswith(admin_domain) else "student"
+    admin_domain = (settings.ADMIN_EMAIL_DOMAIN or "").strip()
+    determined_role = "admin" if (admin_domain and email.endswith(admin_domain)) else "student"
 
     hashed_password = pwd_context.hash(password)
     user_doc = {

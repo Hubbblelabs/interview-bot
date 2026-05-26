@@ -13,7 +13,6 @@ from bson import ObjectId
 settings = get_settings()
 
 # Expected filename format: {12 digits}_{name}.{ext}
-# Example: 714023243122_Sajith J.pdf
 _RESUME_FILENAME_RE = re.compile(r'^(\d{12})_(.+)\.(pdf|doc|docx|txt)$', re.IGNORECASE)
 
 
@@ -27,7 +26,6 @@ async def upload_and_parse_resume(user_id: str, filename: str, file_content: byt
     """Upload resume file, parse with Gemini, extract skills.
 
     Filename must match: {12_digit_reg_no}_{name}.{ext}
-    Example: 714023243122_Sajith J.pdf
     """
     db = get_db()
 
@@ -37,7 +35,7 @@ async def upload_and_parse_resume(user_id: str, filename: str, file_content: byt
         raise ValueError(
             "Invalid filename format. Resume filename must start with your 12-digit register number "
             "followed by an underscore and your name. "
-            "Example: 714023243122_Sajith J.pdf"
+            "Example: 714023200122_Name.pdf"
         )
 
     # ── Check reg_no uniqueness ───────────────────────────────────────────────

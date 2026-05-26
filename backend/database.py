@@ -28,6 +28,14 @@ async def connect_db():
         serverSelectionTimeoutMS=5000,
         connectTimeoutMS=10000,
         socketTimeoutMS=30000,
+        # Close idle connections after 10 min — prevents Atlas from killing
+        # them first (which causes AutoReconnect noise in background tasks).
+        maxIdleTimeMS=600000,
+        # Auto-retry once on transient network errors (e.g. brief Atlas failover).
+        retryWrites=True,
+        retryReads=True,
+        # Check server health every 10 s so stale connections are detected fast.
+        heartbeatFrequencyMS=10000,
     )
     db = mongo_client[settings.MONGO_DB_NAME]
 

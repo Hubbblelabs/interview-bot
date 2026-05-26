@@ -5,7 +5,7 @@ import Navbar from "@/components/Navbar";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import api from "@/lib/api";
 import { JobDescription } from "@/types";
-import { Briefcase, FileUp, Loader2, Plus } from "lucide-react";
+import { Briefcase, FileUp, Loader2, Plus, PencilLine, FileText } from "lucide-react";
 import { toast } from "sonner";
 
 export default function AdminJobDescriptionsPage() {
@@ -165,14 +165,14 @@ export default function AdminJobDescriptionsPage() {
                 onClick={() => setInputMode("type")}
                 className={`flex-1 py-2 rounded-lg text-sm font-semibold border transition-all ${inputMode === "type" ? "bg-white text-black border-white" : "bg-transparent text-muted border-border hover:border-white/30"}`}
               >
-                ✏️ Type manually
+                <PencilLine className="inline-block w-3.5 h-3.5 mr-1.5 -mt-0.5" strokeWidth={1.75} /> Type manually
               </button>
               <button
                 type="button"
                 onClick={() => setInputMode("upload")}
                 className={`flex-1 py-2 rounded-lg text-sm font-semibold border transition-all ${inputMode === "upload" ? "bg-white text-black border-white" : "bg-transparent text-muted border-border hover:border-white/30"}`}
               >
-                📄 Upload file (AI extract)
+                <FileText className="inline-block w-3.5 h-3.5 mr-1.5 -mt-0.5" strokeWidth={1.75} /> Upload file (AI extract)
               </button>
             </div>
 

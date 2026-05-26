@@ -51,8 +51,9 @@ class Settings(BaseSettings):
 
     # Auth — role assignment
     # Only emails ending with this domain are granted the admin role on signup.
-    # Override via env var to lock down or open up access.
-    ADMIN_EMAIL_DOMAIN: str = "@admin.com"
+    # Set via ADMIN_EMAIL_DOMAIN env var (e.g. "@college.edu").
+    # Leave empty to disable automatic admin promotion — admins must be set manually.
+    ADMIN_EMAIL_DOMAIN: str = ""
 
     # Email / SMTP
     # Leave SMTP_HOST empty to run without email (OTP will be logged to console instead).
@@ -106,9 +107,14 @@ class Settings(BaseSettings):
                 "SECURITY: CORS_ALLOWED_ORIGINS is set to '*' in production. "
                 "Set it to your frontend URL to restrict cross-origin access."
             )
-        if is_production and self.ADMIN_EMAIL_DOMAIN == "@admin.com":
+        if is_production and not self.ADMIN_EMAIL_DOMAIN.strip():
             logger.warning(
-                "SECURITY: ADMIN_EMAIL_DOMAIN is still the default '@admin.com'. "
+                "ADMIN_EMAIL_DOMAIN is not set. Automatic admin promotion is disabled. "
+                "Set ADMIN_EMAIL_DOMAIN=@yourinstitution.edu to allow admin self-registration."
+            )
+        elif is_production and self.ADMIN_EMAIL_DOMAIN.strip() == "@admin.com":
+            logger.warning(
+                "SECURITY: ADMIN_EMAIL_DOMAIN is still '@admin.com'. "
                 "Anyone can register an admin account. Set this to your institution domain."
             )
         return self

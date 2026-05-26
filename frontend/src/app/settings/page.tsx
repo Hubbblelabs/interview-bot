@@ -6,7 +6,7 @@ import ProtectedRoute from "@/components/ProtectedRoute";
 import api from "@/lib/api";
 import { Profile, JobDescription } from "@/types";
 import { SpeechVoiceGender } from "@/lib/speech";
-import { Settings, Upload, User, Zap, CheckCircle, Loader2, FileUp } from "lucide-react";
+import { Settings, Upload, User, Zap, CheckCircle, Loader2, FileUp, PencilLine, FileText } from "lucide-react";
 import { PageSkeleton } from "@/components/Skeleton";
 import { toast } from "sonner";
 
@@ -235,7 +235,7 @@ export default function SettingsPage() {
     // Client-side filename validation
     if (!RESUME_FILENAME_RE.test(file.name)) {
       toast.error(
-        "Invalid filename. Format: 714023243122_YourName.pdf  (12-digit register number + underscore + your name)"
+        "Invalid filename. Format: 714023200122_Name.pdf  (12-digit register number + underscore + your name)"
       );
       e.target.value = "";
       return;
@@ -360,14 +360,14 @@ export default function SettingsPage() {
                   onClick={() => setJdInputMode("type")}
                   className={`flex-1 py-2 rounded-lg text-sm font-semibold border transition-all ${jdInputMode === "type" ? "bg-primary text-white border-primary" : "bg-transparent text-muted border-border hover:border-primary/40"}`}
                 >
-                  ✏️ Type manually
+                  <PencilLine className="inline-block w-3.5 h-3.5 mr-1.5 -mt-0.5" strokeWidth={1.75} /> Type manually
                 </button>
                 <button
                   type="button"
                   onClick={() => setJdInputMode("upload")}
                   className={`flex-1 py-2 rounded-lg text-sm font-semibold border transition-all ${jdInputMode === "upload" ? "bg-primary text-white border-primary" : "bg-transparent text-muted border-border hover:border-primary/40"}`}
                 >
-                  📄 Upload file (AI extract)
+                  <FileText className="inline-block w-3.5 h-3.5 mr-1.5 -mt-0.5" strokeWidth={1.75} /> Upload file (AI extract)
                 </button>
               </div>
 
@@ -589,7 +589,7 @@ export default function SettingsPage() {
             <div className="mb-4 p-3 rounded-lg bg-amber-500/8 border border-amber-500/20 text-xs text-amber-400 leading-relaxed">
               <p className="font-semibold mb-1">⚠️ Required filename format:</p>
               <p className="font-mono text-amber-300">{"<12-digit-reg-no>_<YourName>.pdf"}</p>
-              <p className="mt-1 text-amber-400/80">Example: <span className="font-mono">714023243122_Sajith J.pdf</span></p>
+              <p className="mt-1 text-amber-400/80">Example: <span className="font-mono">714023200122_Name.pdf</span></p>
               <p className="mt-1 text-amber-400/80">Allowed: PDF, DOC, DOCX, TXT</p>
             </div>
 
